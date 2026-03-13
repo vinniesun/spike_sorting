@@ -1,0 +1,13 @@
+*.jpg
+*.mp4
+*.tar.gz
+*.png
+*.pth
+*.csv
+*.html
+intracortical_dataset/
+res_env/
+__pycache__/
+.vscode/
+Neuropixel/
+.venv/

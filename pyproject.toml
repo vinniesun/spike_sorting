@@ -1,0 +1,20 @@
+[project]
+name = "spike_sorting"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "einops==0.8.1",
+    "h5py==3.14.0",
+    "matplotlib==3.10.0",
+    "numpy==2.1.2",
+    "pandas==2.3.2",
+    "plotly==6.0.1",
+    "scikit-learn>=1.7.2",
+    "scipy==1.15.2",
+    "seaborn>=0.13.2",
+    "snntorch==0.9.4",
+    "torch==2.5.0",
+    "tqdm>=4.67.1",
+]
