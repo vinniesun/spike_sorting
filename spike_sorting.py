@@ -406,7 +406,9 @@ def train(
             complete_label = torch.cat(complete_label, dim=0)
             train_acc = acc_fn(complete_spikes, complete_label)
 
-        tqdm.write(f"Epoch {epoch+1}/{NUM_EPOCHS}, Training Accuracy: {train_acc:.4f}, Loss: {curr_loss:.4f}")
+        with open(TRAINING_LOG_NAME, "a") as f:
+            f.write(f"\tEpoch {epoch+1}/{NUM_EPOCHS}, training Acc: {train_acc}, Loss: {curr_loss:.4f}\n")
+        # tqdm.write(f"Epoch {epoch+1}/{NUM_EPOCHS}, Training Accuracy: {train_acc:.4f}, Loss: {curr_loss:.4f}")
         if train_acc > best_acc:
             torch.save(net.state_dict(), MODEL_FILENAME)
             best_acc = train_acc
@@ -481,7 +483,8 @@ def test(
         test_acc = acc_fn(complete_spikes, complete_label)
     if final_test:
         # tqdm.write(f"Final Test Accuracy: {test_acc:.4f}")
-        print(f"\t\tFinal Test Accuracy: {test_acc:.4f}")
+        with open(TRAINING_LOG_NAME, "a") as f:
+            f.write(f"\t\tFinal Test Accuracy: {test_acc:.4f}\n")
 
 def clean_images(folder_path):
     if os.path.exists(folder_path):
@@ -504,6 +507,11 @@ if __name__ == "__main__":
     # clean_images(PREDICTION_OUTPUT_PATH)
     TRAINING_PRED_OUTPUT_PATH = "./training_prediction_plots/"
     # clean_images(TRAINING_PRED_OUTPUT_PATH)
+    TRAINING_LOG_PATH = "./spike_sorting_training_log"
+    if not os.path.exists(TRAINING_LOG_PATH):
+        os.makedirs(TRAINING_LOG_PATH)
+    from datetime import datetime
+    TRAINING_LOG_NAME = f"{TRAINING_LOG_PATH}/training_log_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.txt"
 
     SEED = 5673 # 1337, 5673, 87353
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -515,6 +523,9 @@ if __name__ == "__main__":
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
+    with open(TRAINING_LOG_NAME, "a") as f:
+        f.write(f"Seed Number: {SEED}\n\n")
+
     gt_noise_level = "02" # 005, 01, 015, 02
     difficulty = "Difficult2"   # Difficult1, Difficult2, Easy1, Easy2
     filepath = "./intracortical_dataset/"
@@ -523,6 +534,8 @@ if __name__ == "__main__":
     dm_thresholds = np.array([0.2])
     select_top_x_t1_t2 = 10  # At least 9 to make meaningful accuracy
     train_test_split_ratio = 0.5
+    with open(TRAINING_LOG_NAME, "a") as f:
+        f.write(f"Current Setting: thresholds{dm_thresholds}, filename: {filename}\n\n")
 
     signal, spike_class_label, spike_times, sampling_interval, sampling_rate, spike_pulse_1ms_idx_length, spike_classes, filtered_signal = load_dataset(filepath, filename)
     on_threshold = dm_thresholds
