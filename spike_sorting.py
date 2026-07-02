@@ -32,6 +32,17 @@ from tqdm import tqdm
 from BRF.neurons import RAF, TwoThresholdLIF, BRF
 from BRF.grad_functions import StepDoubleGaussianGrad
 
+from datetime import datetime
+
+from utils import (
+    get_threshold_reset_counts,
+    generate_event_stream_dm,
+    generate_event_stream_lif,
+    leaky_integrate_neuron,
+    lif_neuron,
+    load_dataset_intracortical
+)
+
 def step_double_gaussian():
     def inner(x):
         return StepDoubleGaussianGrad.apply(x)
@@ -185,56 +196,6 @@ class Model2(nn.Module):
 
         return torch.stack(spk_hist), torch.stack(mem_hist)
 
-def get_threshold_reset_counts(input_signal, last_reset_voltage, off_threshold, on_threshold, pulse, num_threshold_reset):
-    if pulse == 1:
-        bound = on_threshold
-    else:
-        bound = off_threshold
-    
-    num_threshold_reset += 1
-    last_reset_voltage += bound
-
-    if input_signal - last_reset_voltage > on_threshold:
-        pulse = 1
-        num_threshold_reset, last_reset_voltage = get_threshold_reset_counts(input_signal, last_reset_voltage, off_threshold, on_threshold, pulse, num_threshold_reset)
-    elif input_signal - last_reset_voltage < off_threshold:
-        pulse = -1
-        num_threshold_reset, last_reset_voltage = get_threshold_reset_counts(input_signal, last_reset_voltage, off_threshold, on_threshold, pulse, num_threshold_reset)
-
-    return num_threshold_reset, last_reset_voltage
-
-def generate_event_stream_dm(input_signal, on_threshold, off_threshold, bin_width=1):
-    last_reset_voltage = 0
-    length_of_signal = input_signal.shape[0]
-
-    event_stream = []
-    for i in range(0, length_of_signal-bin_width+1, bin_width):
-        event_queue = []
-        signal_considered = input_signal[i:i+bin_width]
-        num_on_pulses, num_off_pulses = [], []
-
-        for j in range(signal_considered.shape[0]):
-            num_threshold_reset = 0
-            if signal_considered[j] - last_reset_voltage > on_threshold:
-                pulse = 1
-                num_threshold_reset, last_reset_voltage = get_threshold_reset_counts(signal_considered[j], last_reset_voltage, off_threshold, on_threshold, pulse, num_threshold_reset)
-                num_on_pulses.append(num_threshold_reset)
-                num_off_pulses.append(0)
-            elif signal_considered[j] - last_reset_voltage < off_threshold:
-                pulse = -1
-                num_threshold_reset, last_reset_voltage = get_threshold_reset_counts(signal_considered[j], last_reset_voltage, off_threshold, on_threshold, pulse, num_threshold_reset)
-                num_on_pulses.append(0)
-                num_off_pulses.append(num_threshold_reset)
-            else:
-                num_on_pulses.append(0)
-                num_off_pulses.append(0)
-        if sum(num_on_pulses) + sum(num_off_pulses) > 0:
-            event_queue.append([i, 1, 1, sum(num_on_pulses), sum(num_off_pulses)])
-        if len(event_queue) > 0:
-            event_stream.append(event_queue)
-
-    return np.array(event_stream).squeeze(axis=1)
-
 def dt_lif_neuron(filtered_signal, time_step, threshold1=0.8, threshold2=1.0, lif_tau=5e-3):
     u_hist = []
     spk_hist = []
@@ -260,35 +221,6 @@ def dt_lif_neuron(filtered_signal, time_step, threshold1=0.8, threshold2=1.0, li
             spk_hist.append(float(0))
 
     return np.array(spk_hist), time_lif, u_hist
-
-def load_dataset(filepath: str, filename: str):
-    complete_path = filepath + filename
-
-    raw_data = loadmat(complete_path)
-    # print(raw_data.keys())
-    # print(raw_data["spike_class"].shape, raw_data["spike_class"]) # spike_class[0, 0] gives the spike class, and spike_times[0, 0] give the location for when that spike class occurs
-    # print(raw_data["OVERLAP_DATA"].shape)
-    # print(raw_data["data"].shape)
-    # print(raw_data["startData"].shape)
-
-    signal = raw_data["data"].squeeze() # shape (seq_len)
-    spike_class_label = raw_data["spike_class"].squeeze()[0].squeeze()    # shape (num_of_spikes)
-    spike_times = np.array(raw_data["spike_times"][0, 0].squeeze()) # shape (num_of_spikes)
-    sampling_interval = raw_data["samplingInterval"][0, 0] * 1e-3
-    sampling_rate = 1 / (sampling_interval) # 24kHz
-    spike_pulse_1ms_idx_length = int(1e-3 / sampling_interval)
-
-    spike_classes = np.unique(spike_class_label) # label is (1, 2, 3)
-
-    order = 2
-    rp = 0.1
-    rs = 40
-    wn = [300, 5000]
-    normalised_wn = [(2*w) / (sampling_rate) for w in wn]
-    b, a = ellip(order, rp, rs, normalised_wn, btype="bandpass")
-    filtered_signal = lfilter(b, a, signal)
-
-    return signal, spike_class_label, spike_times, sampling_interval, sampling_rate, spike_pulse_1ms_idx_length, spike_classes, filtered_signal
 
 def train_test_split(spike_classes, all_spk_trains, all_spike_signals, train_test_split_ratio):
     train_spk_train, test_spk_train = [], []
@@ -510,7 +442,7 @@ if __name__ == "__main__":
     TRAINING_LOG_PATH = "./spike_sorting_training_log"
     if not os.path.exists(TRAINING_LOG_PATH):
         os.makedirs(TRAINING_LOG_PATH)
-    from datetime import datetime
+    
     TRAINING_LOG_NAME = f"{TRAINING_LOG_PATH}/training_log_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.txt"
 
     SEED = 5673 # 1337, 5673, 87353
@@ -531,20 +463,23 @@ if __name__ == "__main__":
     filepath = "./intracortical_dataset/"
     filename = f"C_{difficulty}_noise{gt_noise_level}.mat"
 
+    # for lif, the threshold is: 0.5, 0.8, 1.2, 1.5, 1.8, 2.0, 2.5, 3.0
     dm_thresholds = np.array([0.2])
+    thresholds = np.array([0.8])
     select_top_x_t1_t2 = 10  # At least 9 to make meaningful accuracy
     train_test_split_ratio = 0.5
     with open(TRAINING_LOG_NAME, "a") as f:
         f.write(f"Current Setting: thresholds{dm_thresholds}, filename: {filename}\n\n")
 
-    signal, spike_class_label, spike_times, sampling_interval, sampling_rate, spike_pulse_1ms_idx_length, spike_classes, filtered_signal = load_dataset(filepath, filename)
+    signal, spike_class_label, spike_times, sampling_interval, sampling_rate, spike_pulse_1ms_idx_length, spike_classes, filtered_signal = load_dataset_intracortical(filepath, filename)
     on_threshold = dm_thresholds
     off_threshold = -dm_thresholds
 
-    event_stream = generate_event_stream_dm(filtered_signal, on_threshold, off_threshold)
-    spike_train = np.zeros_like(signal)
-    spike_train[event_stream[:, 0].astype(int)] = event_stream[:, 3] - event_stream[:, 4]
-
+    # event_stream = generate_event_stream_dm(filtered_signal, on_threshold, off_threshold)
+    # spike_train = np.zeros_like(signal)
+    # spike_train[event_stream[:, 0].astype(int)] = event_stream[:, 3] - event_stream[:, 4]
+    spike_train = generate_event_stream_lif(filtered_signal, sampling_interval, uth=thresholds, lif_tau=sampling_interval, if_reconstruct=False)
+    
     all_spike_signals = {i: [] for i in spike_classes}
     all_spk_trains = {i: [] for i in spike_classes}
     for i in range(len(spike_times)):
