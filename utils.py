@@ -1,6 +1,6 @@
 import numpy as np
 from scipy.io import loadmat
-from scipy.signal import ellip, lfilter
+from scipy.signal import ellip, lfilter, butter
 
 def get_threshold_reset_counts(input_signal, last_reset_voltage, off_threshold, on_threshold, pulse, num_threshold_reset):
     if pulse == 1:
@@ -125,3 +125,40 @@ def load_dataset_intracortical(filepath: str, filename: str):
     filtered_signal = lfilter(b, a, signal)
 
     return signal, spike_class_label, spike_times, sampling_interval, sampling_rate, spike_pulse_1ms_idx_length, spike_classes, filtered_signal
+
+def reconstruction_lif(lif_data, time_step=1e-3, reconstruct_tau=0.05, alpha=0.4, order=2):
+    step_total = lif_data.shape[0]
+    u_rec = []
+    u = 0
+
+    # for step in range(step_total):
+    #     decay = alpha * math.exp(-(time_step/reconstruct_tau))
+    #     u_rec.append(u)
+    #     u = (u + lif_data[step]) * decay
+    
+    rp = 0.1
+    rs = 40
+    cut_off_freq = 5000 # 5000 for intracortical
+    b, a = butter(order, 2*cut_off_freq/(1/time_step), btype='low')
+    # b, a = ellip(order, rp, rs, 2*cut_off_freq/(1/time_step), btype="low")
+    # b, a = bessel(order, 2*cut_off_freq/(1/time_step), btype='low')
+    u_rec = lfilter(b, a, lif_data)
+
+    return np.array(u_rec)
+
+def calc_rmse(data, reconstructed_signal, spikeTimeGT):
+    data_spk = np.array([])
+    reconstructed_spk = np.array([])
+
+    for i in spikeTimeGT[spikeTimeGT < np.size(data)]:
+        evaluation_window = [i-12, i+48]
+        reconstructed_spk_section = reconstructed_signal[evaluation_window[0]:evaluation_window[1]]
+
+        data_spk_section = data[evaluation_window[0] - 1:evaluation_window[1] - 1]#Since the reconstructed signal is delayed by 1 sample
+        # print("123", data_spk.shape, data_spk_section.shape)
+        data_spk = np.concatenate((data_spk,data_spk_section))
+        reconstructed_spk = np.concatenate((reconstructed_spk,reconstructed_spk_section))
+    rmse = np.sqrt(np.mean((data_spk - reconstructed_spk)**2))
+    # print(rmse)
+
+    return rmse 

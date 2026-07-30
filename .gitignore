@@ -11,3 +11,6 @@ __pycache__/
 .vscode/
 Neuropixel/
 .venv/
+final_figures/
+train_samples_output/
+interval_statistics/

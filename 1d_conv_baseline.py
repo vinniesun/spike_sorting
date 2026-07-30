@@ -22,6 +22,8 @@ from einops import repeat
 from scipy.signal import ellip, lfilter, butter, find_peaks
 from scipy.io import loadmat
 
+from datetime import datetime
+
 import h5py 
 import math
 from typing import Tuple, Union, List, Optional
@@ -524,7 +526,7 @@ if __name__ == "__main__":
     TRAINING_LOG_PATH = "./1d_conv_training_log"
     if not os.path.exists(TRAINING_LOG_PATH):
         os.makedirs(TRAINING_LOG_PATH)
-    from datetime import datetime
+    
     TRAINING_LOG_NAME = f"{TRAINING_LOG_PATH}/training_log_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.txt"
 
     SEED = 1337 # 1234, 1337, 5673

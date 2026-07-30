@@ -28,7 +28,7 @@ from typing import Tuple, Union, List, Optional
 
 from tqdm import tqdm
 
-from BRF.neurons import RAF, DTLIF
+# from BRF.neurons import RAF, DTLIF
 from BRF.grad_functions import StepDoubleGaussianGrad
 
 def step_double_gaussian():
@@ -369,11 +369,11 @@ def calc_t1_t2_interval_filter(spk_train: np.ndarray, sampling_interval, spike_p
     if second_idx is not None and third_idx is not None and t2 is None:
         t2 = (third_idx - second_idx) * sampling_interval
 
-    if spk_train_id is not None:
-        if t1 is None:
-            print(f"Spike train ID {spk_train_id} has t1 as None")
-        if t2 is None:
-            print(f"Spike train ID {spk_train_id} has t2 as None")
+    # if spk_train_id is not None:
+    #     if t1 is None:
+    #         print(f"Spike train ID {spk_train_id} has t1 as None")
+    #     if t2 is None:
+    #         print(f"Spike train ID {spk_train_id} has t2 as None")
 
     return t1, t2, spk_train_new
 
@@ -644,13 +644,12 @@ if __name__ == "__main__":
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
-    use_dm = "none"
-    use_reconstructed = True
+    use_dm = "lif"
+    use_reconstructed = False
     reconstruct_dm = False
     # for dm, the threshold is: 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8
     # for lif, the threshold is: 0.5, 0.8, 1.2, 1.5, 1.8, 2.0, 2.5, 3.0
-    thresholds = np.array([3.0]) # to do 0.6
-    print(f"Current threshold is: {thresholds}")
+    thresholds = np.array([1.8]) 
     window_size = 70
     train_test_split_ratio = 0.5
 
@@ -704,5 +703,41 @@ if __name__ == "__main__":
             # Split into train & test set by class
             train_spk_train, test_spk_train, train_signal, test_signal, train_label, test_label = train_test_split(spike_classes, all_spk_trains, all_spike_signals, train_test_split_ratio)
 
+            t1s, t2s = [], []
+            for i, spk_train in tqdm(enumerate(train_spk_train)):
+                t1, t2, _ = calc_t1_t2_interval_filter(spk_train, sampling_interval, spike_pulse_1ms_idx_length*2, spk_train_id=i)
+
+                t1s.append(t1)
+                t2s.append(t2)
+                plot_single_spike_signal_with_dm(test_signal[i], spk_train, test_label[i], specify_name=f"{filename}_train_sample_idx_{i}_class_{test_label[i]}")
+
+            ########## Generate t1 and t2 statistics for training set ##########
+            t1_t2_counter_by_spk_class = {i:[] for i in spike_classes}
+            complete_xs, complete_ys, complete_sizes, complete_labels = [], [], [], []
+            for spike_class in spike_classes:
+                idx = np.where(np.array(train_label) == spike_class)[0]
+                t1_t2_counter = dict()
+                for i in idx:
+                    if (t1s[i], t2s[i]) in t1_t2_counter:
+                        t1_t2_counter[(t1s[i], t2s[i])] += 1
+                    else:
+                        t1_t2_counter[(t1s[i], t2s[i])] = 1
+
+                t1_t2_counter_by_spk_class[spike_class].append(t1_t2_counter)
+
+                # print(f"For Spike Class {spike_class}: ")
+                xs, ys, size = [], [], []
+                with open(f"./interval_statistics/{filename}_{spike_class}.csv", "w") as f:
+                    f.write("t1, t2, count\n")
+                    for key, value in t1_t2_counter.items():
+                        # print(f"{key}: {value}")
+                        xs.append(key[0] if key[0] is not None else 0)
+                        complete_xs.append(key[0] if key[0] is not None else 0)
+                        ys.append(key[1] if key[1] is not None else 0)
+                        complete_ys.append(key[1] if key[1] is not None else 0)
+                        size.append(value*10)
+                        complete_sizes.append(value*10)
+                        complete_labels.append(spike_class)
+                        f.write(f"{key[0] if key[0] is not None else 0},{key[1] if key[1] is not None else 0},{value}\n")
             
         print("")
