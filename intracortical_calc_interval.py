@@ -31,200 +31,15 @@ from tqdm import tqdm
 # from BRF.neurons import RAF, DTLIF
 from BRF.grad_functions import StepDoubleGaussianGrad
 
-def step_double_gaussian():
-    def inner(x):
-        return StepDoubleGaussianGrad.apply(x)
-    return inner
+from utils import (
+    load_dataset_intracortical,
+    generate_event_stream_dm,
+    generate_event_stream_lif,
+    train_test_split,
+    reconstruction_lif,
+    reconstruct_DDM
+)
 
-class IntracorticalDataset(Dataset):
-    def __init__(self, spikes: torch.Tensor, labels: torch.Tensor):
-        self.spikes = spikes
-        self.labels = labels
-
-    def __len__(self):
-        return self.spikes.shape[0]
-
-    def __getitem__(self, idx):
-        return self.spikes[idx], self.labels[idx]
-
-class Model(nn.Module):
-    def __init__(
-            self, 
-            in_channel: list[int],
-            filters: List[int],
-            kernel_sizes: List[int],
-            strides: List[int],
-            fc_input_dim: int,
-            num_classes: int,
-    ):
-        super().__init__()
-
-        self.convs = nn.ModuleList(
-            [nn.Conv1d(
-                in_channels=in_channel[i],
-                out_channels=filters[i],
-                kernel_size=kernel_sizes[i],
-                stride=strides[i]
-            ) for i in range(len(filters))]
-        )
-        self.relu = nn.ReLU()
-        
-        self.fc1 = nn.Linear(fc_input_dim, num_classes)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        bs, num_chan, seq_len = x.shape
-
-        for i in range(len(self.convs)):
-            x = self.relu(self.convs[i](x))
-
-        x = x.view(bs, -1)
-        x = self.fc1(x)
-
-        return x
-
-def get_threshold_reset_counts(input_signal, last_reset_voltage, off_threshold, on_threshold, pulse, num_threshold_reset):
-    if pulse == 1:
-        bound = on_threshold
-    else:
-        bound = off_threshold
-    
-    num_threshold_reset += 1
-    last_reset_voltage += bound
-
-    if input_signal - last_reset_voltage > on_threshold:
-        pulse = 1
-        num_threshold_reset, last_reset_voltage = get_threshold_reset_counts(input_signal, last_reset_voltage, off_threshold, on_threshold, pulse, num_threshold_reset)
-    elif input_signal - last_reset_voltage < off_threshold:
-        pulse = -1
-        num_threshold_reset, last_reset_voltage = get_threshold_reset_counts(input_signal, last_reset_voltage, off_threshold, on_threshold, pulse, num_threshold_reset)
-
-    return num_threshold_reset, last_reset_voltage
-
-def generate_event_stream_dm(input_signal, on_threshold, off_threshold, bin_width=1):
-    last_reset_voltage = 0
-    length_of_signal = input_signal.shape[0]
-
-    event_stream = []
-    for i in range(0, length_of_signal-bin_width+1, bin_width):
-        event_queue = []
-        signal_considered = input_signal[i:i+bin_width]
-        num_on_pulses, num_off_pulses = [], []
-
-        for j in range(signal_considered.shape[0]):
-            num_threshold_reset = 0
-            if signal_considered[j] - last_reset_voltage > on_threshold:
-                pulse = 1
-                num_threshold_reset, last_reset_voltage = get_threshold_reset_counts(signal_considered[j], last_reset_voltage, off_threshold, on_threshold, pulse, num_threshold_reset)
-                num_on_pulses.append(num_threshold_reset)
-                num_off_pulses.append(0)
-            elif signal_considered[j] - last_reset_voltage < off_threshold:
-                pulse = -1
-                num_threshold_reset, last_reset_voltage = get_threshold_reset_counts(signal_considered[j], last_reset_voltage, off_threshold, on_threshold, pulse, num_threshold_reset)
-                num_on_pulses.append(0)
-                num_off_pulses.append(num_threshold_reset)
-            else:
-                num_on_pulses.append(0)
-                num_off_pulses.append(0)
-        if sum(num_on_pulses) + sum(num_off_pulses) > 0:
-            event_queue.append([i, 1, 1, sum(num_on_pulses), sum(num_off_pulses)])
-        if len(event_queue) > 0:
-            event_stream.append(event_queue)
-
-    return np.array(event_stream).squeeze(axis=1)
-
-def generate_event_stream_lif(filtered_signal, time_step, uth, lif_tau, if_reconstruct=False):
-    spike_lif, time_lif, u_lif = lif_neuron(filtered_signal.T, time_step, uth, lif_tau)
-
-    on_counts = np.zeros(filtered_signal.T.size)
-    off_counts = np.zeros(filtered_signal.T.size)
-
-    on_time = np.where(spike_lif > 0)
-    off_time = np.where(spike_lif < 0)
-
-    on_counts[np.array(on_time, dtype=int)] = 1
-    off_counts[np.array(off_time, dtype=int)] = 1
-
-    spike_train = on_counts - off_counts
-
-    if if_reconstruct:
-        return spike_train.T, spike_lif
-    else:
-        return spike_train.T
-
-def leaky_integrate_neuron(U, time_step=1e-3, I=0, R=5, Urest=0, tau=5e-3):
-    # tau = R*C
-    U = (U) + (time_step/tau)*(-(U) + I*R) - Urest
-    return U
-
-def lif_neuron(filtered_signal, time_step=1e-3, uth=0.8, lif_tau=5e-3):
-    U_trace = []
-    spike_rec = []
-    u = 0
-    urest = 0
-    time_lif = np.linspace(0, filtered_signal.shape[0], filtered_signal.shape[0], dtype=float)
-    for step in range(filtered_signal.shape[0]):
-        U_trace.append(u)
-        u = leaky_integrate_neuron(u, time_step=time_step, I=filtered_signal[step], Urest=urest, tau=lif_tau)  # solve next step of U
-        if u >= uth:
-            urest = uth
-            spike_rec.append(float(1))
-        elif u<= -uth:
-            urest = -uth
-            spike_rec.append(float(-1))
-        else:
-            urest = 0
-            spike_rec.append(float(0))
-
-    return np.array(spike_rec), time_lif, U_trace
-
-def load_dataset(filepath: str, filename: str):
-    complete_path = filepath + filename
-
-    raw_data = loadmat(complete_path)
-    # print(raw_data.keys())
-    # print(raw_data["spike_class"].shape, raw_data["spike_class"]) # spike_class[0, 0] gives the spike class, and spike_times[0, 0] give the location for when that spike class occurs
-    # print(raw_data["OVERLAP_DATA"].shape)
-    # print(raw_data["data"].shape)
-    # print(raw_data["startData"].shape)
-
-    signal = raw_data["data"].squeeze() # shape (seq_len)
-    spike_class_label = raw_data["spike_class"].squeeze()[0].squeeze()    # shape (num_of_spikes)
-    spike_times = np.array(raw_data["spike_times"][0, 0].squeeze()) # shape (num_of_spikes)
-    sampling_interval = raw_data["samplingInterval"][0, 0] * 1e-3
-    sampling_rate = 1 / (sampling_interval) # 24kHz
-    spike_pulse_1ms_idx_length = int(1e-3 / sampling_interval)
-
-    spike_classes = np.unique(spike_class_label) # label is (1, 2, 3)
-
-    order = 2
-    rp = 0.1
-    rs = 40
-    wn = [300, 5000]
-    normalised_wn = [(2*w) / (sampling_rate) for w in wn]
-    b, a = ellip(order, rp, rs, normalised_wn, btype="bandpass")
-    filtered_signal = lfilter(b, a, signal)
-
-    return signal, spike_class_label, spike_times, sampling_interval, sampling_rate, spike_pulse_1ms_idx_length, spike_classes, filtered_signal
-
-def train_test_split(spike_classes, all_spk_trains, all_spike_signals, train_test_split_ratio):
-    train_spk_train, test_spk_train = [], []
-    train_signal, test_signal = [], []
-    train_label, test_label = [], []
-    for spike_class in spike_classes:
-        idx = np.arange(len(all_spk_trains[spike_class]))
-        np.random.shuffle(idx)
-        train_idx = idx[:int(train_test_split_ratio * len(idx))]
-        test_idx = idx[int(train_test_split_ratio * len(idx)):]
-        for i in train_idx:
-            train_spk_train.append(all_spk_trains[spike_class][i])
-            train_signal.append(all_spike_signals[spike_class][i])
-            train_label.append(spike_class)
-        for i in test_idx:
-            test_spk_train.append(all_spk_trains[spike_class][i])
-            test_signal.append(all_spike_signals[spike_class][i])
-            test_label.append(spike_class)
-
-    return train_spk_train, test_spk_train, train_signal, test_signal, train_label, test_label
 
 def plot_sorted_spike_signals(signals: List, sorted_class: int):
     fig, ax = plt.subplots(1, 1, figsize=(12, 6))
@@ -236,13 +51,14 @@ def plot_sorted_spike_signals(signals: List, sorted_class: int):
 
 def plot_single_spike_signal_with_dm(input_signal: np.ndarray, spike_train: np.ndarray, sorted_class: int, spk_train_filtered: Optional[np.ndarray]=None, specify_name: Optional[str]=None):
     fig, ax = plt.subplots(1, 1, figsize=(12, 6))
-    ax.plot(input_signal, color="red")
+    time = np.arange(input_signal.shape[0]) / 24000
+    ax.plot(time, input_signal, color="red")
     # ax.stem(spike_train*0.1, markerfmt=" ")
     if spk_train_filtered is None:
         pos_loc = np.where(spike_train > 0)[0]
         neg_loc = np.where(spike_train < 0)[0]
-        ax.eventplot(pos_loc, lineoffsets=0, linelengths=0.5, colors="blue")
-        ax.eventplot(neg_loc, lineoffsets=0, linelengths=0.5, colors="green")
+        ax.eventplot(time[pos_loc], lineoffsets=0, linelengths=0.5, colors="blue")
+        ax.eventplot(time[neg_loc], lineoffsets=0, linelengths=0.5, colors="green")
     else:
         pos_loc = np.where(spike_train > 0)[0]
         neg_loc = np.where(spike_train < 0)[0]
@@ -585,39 +401,6 @@ def clean_images(folder_path):
         print(f"Cleaned up folder: {folder_path}")
     os.makedirs(folder_path, exist_ok=True)
 
-def reconstruct_DDM(event_counts, spike_amplitude):
-    # print("sdafsdf", event_counts.shape)
-    sig_length = np.shape(event_counts)[1]
-    reconstructed_signal =  np.zeros(sig_length)
-    reconstructed_signal[0] = 0
-    for i in range(1,sig_length):
-        current_value = reconstructed_signal[i-1]
-        current_value = current_value + event_counts[0][i-1] * spike_amplitude
-        current_value = current_value - event_counts[1][i-1] * spike_amplitude
-        reconstructed_signal[i] = current_value[0]
-    return reconstructed_signal
-
-def reconstruction_lif(lif_data, time_step=1e-3, reconstruct_tau=0.05, alpha=0.4, order=2):
-    
-    step_total = lif_data.shape[0]
-    u_rec = []
-    u = 0
-
-    # for step in range(step_total):
-    #     decay = alpha * math.exp(-(time_step/reconstruct_tau))
-    #     u_rec.append(u)
-    #     u = (u + lif_data[step]) * decay
-    
-    rp = 0.1
-    rs = 40
-    cut_off_freq = 5000 # 5000 for intracortical
-    b, a = butter(order, 2*cut_off_freq/(1/time_step), btype='low')
-    # b, a = ellip(order, rp, rs, 2*cut_off_freq/(1/time_step), btype="low")
-    # b, a = bessel(order, 2*cut_off_freq/(1/time_step), btype='low')
-    u_rec = lfilter(b, a, lif_data)
-
-    return np.array(u_rec)
-
 if __name__ == "__main__":
     """
         Dataset downloaded from: https://figshare.le.ac.uk/articles/dataset/Simulated_dataset/11897595?file=21819066
@@ -644,12 +427,12 @@ if __name__ == "__main__":
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
-    use_dm = "lif"
+    encoding_name = "dm"
     use_reconstructed = False
     reconstruct_dm = False
     # for dm, the threshold is: 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8
     # for lif, the threshold is: 0.5, 0.8, 1.2, 1.5, 1.8, 2.0, 2.5, 3.0
-    thresholds = np.array([1.8]) 
+    thresholds = np.array([0.2]) 
     window_size = 70
     train_test_split_ratio = 0.5
 
@@ -661,18 +444,20 @@ if __name__ == "__main__":
             filename = f"C_{difficulty}_noise{gt_noise_level}.mat"
             print(f"\tCurrent filename is: {filename}")
 
-            signal, spike_class_label, spike_times, sampling_interval, sampling_rate, spike_pulse_1ms_idx_length, spike_classes, filtered_signal = load_dataset(filepath, filename)
+            signal, spike_class_label, spike_times, sampling_interval, sampling_rate, spike_pulse_1ms_idx_length, spike_classes, filtered_signal = load_dataset_intracortical(filepath, filename)
+
+            spike_times += 30 # shift forward by 1.5ms
 
             on_threshold = thresholds
             off_threshold = -thresholds
 
-            if use_dm == "dm":
+            if encoding_name == "dm":
                 event_stream = generate_event_stream_dm(filtered_signal, on_threshold, off_threshold)
                 spike_train = np.zeros_like(signal)
                 spike_train[event_stream[:, 0].astype(int)] = event_stream[:, 3] - event_stream[:, 4]
-            elif use_dm == "lif":
+            elif encoding_name == "lif":
                 spike_train = generate_event_stream_lif(filtered_signal, sampling_interval, uth=thresholds, lif_tau=sampling_interval, if_reconstruct=False)
-            elif use_dm == "none":
+            elif encoding_name == "none":
                 if use_reconstructed:
                     if reconstruct_dm:
                         event_stream = generate_event_stream_dm(filtered_signal, on_threshold, off_threshold)
@@ -692,8 +477,11 @@ if __name__ == "__main__":
             all_spike_signals = {i: [] for i in spike_classes}
             all_spk_trains = {i: [] for i in spike_classes}
             for i in range(len(spike_times)):
-                all_spike_signals[spike_class_label[i]].append(filtered_signal[spike_times[i]:spike_times[i] + window_size])
-                all_spk_trains[spike_class_label[i]].append(spike_train[spike_times[i]:spike_times[i] + window_size])
+                # all_spike_signals[spike_class_label[i]].append(filtered_signal[spike_times[i]:spike_times[i] + window_size])
+                # all_spk_trains[spike_class_label[i]].append(spike_train[spike_times[i]:spike_times[i] + window_size])
+
+                all_spike_signals[spike_class_label[i]].append(filtered_signal[spike_times[i] - 23:spike_times[i] + 23 + 1])
+                all_spk_trains[spike_class_label[i]].append(spike_train[spike_times[i] - 23:spike_times[i] + 23 + 1])
 
             ################ Plot to verify ################
             # for spike_class in spike_classes:
@@ -740,4 +528,3 @@ if __name__ == "__main__":
                         complete_labels.append(spike_class)
                         f.write(f"{key[0] if key[0] is not None else 0},{key[1] if key[1] is not None else 0},{value}\n")
             
-        print("")
