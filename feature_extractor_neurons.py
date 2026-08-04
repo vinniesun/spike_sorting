@@ -12,42 +12,39 @@ class DBRF(nn.Module):
     def __init__(
         self,
         input_dim: int,
-        t1_t2_omegas: torch.Tensor,
-        t1_t2_bs: torch.Tensor,
-        threshold: torch.Tensor,
+        dual_omegas: torch.Tensor,
+        dual_bs: torch.Tensor,
+        dual_threshold: torch.Tensor,
         dt: float = 1/24000,
         learn_omega: bool = False,
         learn_b: bool = False,
-        learn_threshold: bool = False,
+        learn_dual_threshold: bool = False,
     ):
         super().__init__()
 
         self.input_dim = input_dim
 
-        assert self.input_dim == t1_t2_omegas.shape[0], "input_dim does not match t1_t2_omegas' first dimension"
-        assert self.input_dim == t1_t2_bs.shape[0], "input_dim does not match t1_t2_bs' first dimension"
-        assert self.input_dim == threshold.shape[0], "input_dim does not match threshold's first dimension"
+        assert self.input_dim == dual_omegas.shape[0], "input_dim does not match dual_omegas' first dimension"
+        assert self.input_dim == dual_bs.shape[0], "input_dim does not match dual_bs' first dimension"
+        assert self.input_dim == dual_threshold.shape[0], "input_dim does not match dual_threshold's first dimension"
 
         self.learn_omega = learn_omega
         if learn_omega:
-            # print("Learning omega")
-            self.t1_t2_omegas = nn.Parameter(t1_t2_omegas)
+            self.dual_omegas = nn.Parameter(dual_omegas)
         else:
-            self.register_buffer('t1_t2_omegas', t1_t2_omegas)  # Dimension is (num_of_raf_neurons, 2)
+            self.register_buffer('dual_omegas', dual_omegas)  # Dimension is (num_of_raf_neurons, 2)
 
         self.learn_b = learn_b
         if learn_b:
-            # print("Learning b")
-            self.t1_t2_bs = nn.Parameter(t1_t2_bs)
+            self.dual_bs = nn.Parameter(dual_bs)
         else:
-            self.register_buffer('t1_t2_bs', t1_t2_bs)  # Dimension is (num_of_raf_neurons, 2)
+            self.register_buffer('dual_bs', dual_bs)  # Dimension is (num_of_raf_neurons, 2)
 
-        self.learn_threshold = learn_threshold
-        if learn_threshold:
-            # print("Learning threshold")
-            self.threshold = nn.Parameter(threshold)
+        self.learn_dual_threshold = learn_dual_threshold
+        if learn_dual_threshold:
+            self.dual_threshold = nn.Parameter(dual_threshold)
         else:
-            self.register_buffer('threshold', threshold)    # Dimension is (num_of_raf_neurons, 2)
+            self.register_buffer('dual_threshold', dual_threshold)    # Dimension is (num_of_raf_neurons, 2)
 
         self.dt = dt
         
@@ -55,17 +52,17 @@ class DBRF(nn.Module):
         self,
         batch_size: int,
     ):
-        hidden_z = torch.zeros((batch_size, self.input_dim), device=self.t1_t2_omegas.device, dtype=self.t1_t2_omegas.dtype)
-        hidden_u = torch.zeros_like(hidden_z, device=self.t1_t2_omegas.device, dtype=self.t1_t2_omegas.dtype)
-        hidden_v = torch.zeros_like(hidden_z, device=self.t1_t2_omegas.device, dtype=self.t1_t2_omegas.dtype)
-        hidden_q = torch.zeros_like(hidden_z, device=self.t1_t2_omegas.device, dtype=self.t1_t2_omegas.dtype)
+        hidden_z = torch.zeros((batch_size, self.input_dim), device=self.dual_omegas.device, dtype=self.dual_omegas.dtype)
+        hidden_u = torch.zeros_like(hidden_z, device=self.dual_omegas.device, dtype=self.dual_omegas.dtype)
+        hidden_v = torch.zeros_like(hidden_z, device=self.dual_omegas.device, dtype=self.dual_omegas.dtype)
+        hidden_q = torch.zeros_like(hidden_z, device=self.dual_omegas.device, dtype=self.dual_omegas.dtype)
 
-        # Initialise the use_t1 here.
-        use_t1 = torch.zeros_like(hidden_z, device=self.t1_t2_omegas.device, dtype=torch.int64) # Dimension is (num_of_raf_neurons, 2)
-        # if true, use t1_t2_omegas[:, 0], else use t1_t2_omegas[:, 1]. Same logic for t1_t2_bs and threshold
+        # Initialise the select_t1_t2 here.
+        select_t1_t2 = torch.zeros_like(hidden_z, device=self.dual_omegas.device, dtype=torch.int64) # Dimension is (num_of_raf_neurons, 2)
+        # if true, use dual_omegas[:, 0], else use dual_omegas[:, 1]. Same logic for dual_bs and dual_threshold
         # Must be of dtype int64 for gather operation later
 
-        return hidden_z, hidden_u, hidden_v, hidden_q, use_t1
+        return hidden_z, hidden_u, hidden_v, hidden_q, select_t1_t2
 
     def sustain_osc(
         self,
@@ -82,16 +79,15 @@ class DBRF(nn.Module):
         b: torch.Tensor,  # attraction to resting state
         omega: torch.Tensor,  # eigen ang. frequency of the neuron
         dt: Union[float, torch.Tensor],
-        use_t1: torch.Tensor,
+        select_t1_t2: torch.Tensor,
     ):
         
         u_ = u + b * u * dt - omega * v * dt + x * dt
         v = v + omega * u * dt + b * v * dt
         # generate spike.
-        # select the correct threshold based on self.use_t1
-        # z = StepDoubleGaussianGrad.apply(torch.abs(u_) - self.threshold.gather(-1, self.use_t1.unsqueeze(-1)).squeeze(-1) - q)
-        current_threshold = einops.repeat(self.threshold, 'd t -> b d t', b=x.shape[0])
-        z = StepDoubleGaussianGrad.apply(torch.abs(u_) - current_threshold.gather(-1, use_t1.unsqueeze(-1)).squeeze(-1) - q)
+        # select the correct dual_threshold based on self.select_t1_t2
+        current_threshold = einops.repeat(self.dual_threshold, 'd t -> b d t', b=x.shape[0])
+        z = StepDoubleGaussianGrad.apply(torch.abs(u_) - current_threshold.gather(-1, select_t1_t2.unsqueeze(-1)).squeeze(-1) - q)
 
         # q = q.mul(0.9) + z # Original Scale
         q = q.mul(1e-2) + z
@@ -109,27 +105,18 @@ class DBRF(nn.Module):
         if state is None:
             batch_size = x.shape[0]
             state = self.init_hidden_state(batch_size)
-            z, u, v, q, use_t1 = state
+            z, u, v, q, select_t1_t2 = state
         else:
             batch_size = x.shape[0]
-            z, u, v, q, use_t1 = state
-        # print("before use_t1: ", self.use_t1.shape)
-        # print(f"before spike: {z.shape}, u: {u.shape}, v: {v.shape}, q: {q.shape}, omega: {self.t1_t2_omegas.shape}, b: {self.t1_t2_bs.shape}, input: {x.shape}")
+            z, u, v, q, select_t1_t2 = state
 
-        # self.t1_t2_omegas = einops.repeat(self.t1_t2_omegas, 'd t -> b d t', b=x.shape[0])
-        # self.t1_t2_bs = einops.repeat(self.t1_t2_bs, 'd t -> b d t', b=x.shape[0])
-        # self.threshold = einops.repeat(self.threshold, 'd t -> b d t', b=x.shape[0])
-        # self.use_t1 = einops.repeat(self.use_t1, 'd -> b d', b=x.shape[0])
-
-        # select omega and b based on self.use_t1
-        current_t1_t2_omegas = einops.repeat(self.t1_t2_omegas, 'd t -> b d t', b=batch_size)
-        omega = torch.abs(current_t1_t2_omegas.gather(-1, use_t1.unsqueeze(-1))).squeeze(-1)
-        # omega = torch.abs(self.t1_t2_omegas.gather(-1, self.use_t1.unsqueeze(-1))).squeeze(-1)
+        # select omega and b based on self.select_t1_t2
+        current_dual_omegas = einops.repeat(self.dual_omegas, 'd t -> b d t', b=batch_size)
+        omega = torch.abs(current_dual_omegas.gather(-1, select_t1_t2.unsqueeze(-1))).squeeze(-1)
         p_omega = self.sustain_osc(omega)
 
-        current_t1_t2_bs = einops.repeat(self.t1_t2_bs, 'd t -> b d t', b=batch_size)
-        b_offset = torch.abs(current_t1_t2_bs.gather(-1, use_t1.unsqueeze(-1))).squeeze(-1)
-        # b_offset = torch.abs(self.t1_t2_bs.gather(-1, self.use_t1.unsqueeze(-1))).squeeze(-1)
+        current_dual_bs = einops.repeat(self.dual_bs, 'd t -> b d t', b=batch_size)
+        b_offset = torch.abs(current_dual_bs.gather(-1, select_t1_t2.unsqueeze(-1))).squeeze(-1)
         # divergence boundary
         b = p_omega - b_offset - q
 
@@ -142,26 +129,12 @@ class DBRF(nn.Module):
             b=b,
             omega=omega,
             dt=self.dt,
-            use_t1=use_t1,
+            select_t1_t2=select_t1_t2,
         )
 
-        # z = z.squeeze(-1)
-        # u = u.squeeze(-1)
-        # v = v.squeeze(-1)
-        # q = q.squeeze(-1)
-
-        ######### use_t1 is now a hidden state
-        ######### when we select which omega, b and threshold to use, we just repeat them to include batch size dimension
-        ######### Then the rest of the code remains unchanged, and we can remove those redundant helper methods
-        # Update self.use_t1. Should update just use_t1 now
-        # use_t1 = torch.remainder(use_t1 + z, 2).to(torch.int64)
-        use_t1 = torch.remainder(use_t1 + torch.abs(z), 2).to(torch.int64) # To account for negative spikes
-        # self.use_t1 = torch.remainder(self.use_t1 + z, 2).to(torch.int64)
-        # print("after use_t1: ", self.use_t1.shape)
-        # print(f"after spike: {z.shape}, u: {u.shape}, v: {v.shape}, q: {q.shape}, omega: {self.t1_t2_omegas.shape}, b: {self.t1_t2_bs.shape}, input: {x.shape},\
-        #       p_omega: {p_omega.shape}, b: {b.shape}")
+        select_t1_t2 = torch.remainder(select_t1_t2 + torch.abs(z), 2).to(torch.int64) # To account for negative spikes
         
-        return z, u, v, q, use_t1
+        return z, u, v, q, select_t1_t2
 
 class DTLIF(nn.Module):
     def __init__(

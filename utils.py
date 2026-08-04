@@ -2,6 +2,20 @@ import numpy as np
 from scipy.io import loadmat
 from scipy.signal import ellip, lfilter, butter
 
+import torch
+from torch.utils.data import Dataset
+
+class IntracorticalDataset(Dataset):
+    def __init__(self, spikes: torch.Tensor, labels: torch.Tensor):
+        self.spikes = spikes
+        self.labels = labels
+
+    def __len__(self):
+        return self.spikes.shape[0]
+
+    def __getitem__(self, idx):
+        return self.spikes[idx], self.labels[idx]
+
 def get_threshold_reset_counts(input_signal, last_reset_voltage, off_threshold, on_threshold, pulse, num_threshold_reset):
     if pulse == 1:
         bound = on_threshold
@@ -46,7 +60,7 @@ def generate_event_stream_dm(input_signal, on_threshold, off_threshold, bin_widt
                 num_on_pulses.append(0)
                 num_off_pulses.append(0)
         if sum(num_on_pulses) + sum(num_off_pulses) > 0:
-            event_queue.append([i, 1, 1, sum(num_on_pulses), sum(num_off_pulses)])
+            event_queue.append([i, sum(num_on_pulses), sum(num_off_pulses)])
         if len(event_queue) > 0:
             event_stream.append(event_queue)
 

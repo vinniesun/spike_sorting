@@ -35,166 +35,17 @@ from BRF.grad_functions import StepDoubleGaussianGrad
 from datetime import datetime
 
 from utils import (
+    IntracorticalDataset,
     get_threshold_reset_counts,
     generate_event_stream_dm,
     generate_event_stream_lif,
     leaky_integrate_neuron,
     lif_neuron,
-    load_dataset_intracortical
+    load_dataset_intracortical,
 )
-
-def step_double_gaussian():
-    def inner(x):
-        return StepDoubleGaussianGrad.apply(x)
-    return inner
-
-class IntracorticalDataset(Dataset):
-    def __init__(self, spikes: torch.Tensor, labels: torch.Tensor):
-        self.spikes = spikes
-        self.labels = labels
-
-    def __len__(self):
-        return self.spikes.shape[0]
-
-    def __getitem__(self, idx):
-        return self.spikes[idx], self.labels[idx]
-
-class Model(nn.Module):
-    def __init__(
-            self, 
-            input_dim: int,
-            t1_t2_omegas: torch.Tensor,
-            t1_t2_bs: torch.Tensor,
-            threshold: torch.Tensor,
-            dt: float=1/24000,
-            learn_threshold: bool=False,
-            num_classes: int=3,
-            beta: float=0.9,
-            pos_threshold: float=1.0,
-            neg_threshold: float=-1.0,
-            reset_mechanism: str="subtract"
-    ):
-        super().__init__()
-
-        self.rafs = RAF(
-            input_dim=input_dim,
-            t1_t2_omegas=t1_t2_omegas,
-            t1_t2_bs=t1_t2_bs,
-            threshold=threshold,
-            dt=dt,
-            learn_omega=True,
-            learn_b=True,
-            learn_threshold=learn_threshold
-        )
-        self.dtlif = TwoThresholdLIF(
-            beta=beta,
-            pos_threshold=pos_threshold,
-            neg_threshold=neg_threshold,
-            reset_mechanism=reset_mechanism,
-        )
-
-        self.fc1 = nn.Linear(input_dim + 1, num_classes, bias=True)
-        self.lif1 = snn.Leaky(beta=0.9, threshold=0.8, learn_beta=True, learn_threshold=True, spike_grad=step_double_gaussian(), reset_mechanism="subtract")
-        # self.fc2 = nn.Linear(30, num_classes)
-        # self.lif2 = snn.Leaky(beta=0.9, threshold=0.8, reset_mechanism="subtract")
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x shape: (batch_size, seq_len, input_dim)
-        bs, seq_len = x.shape
-        hidden_states = self.rafs.init_hidden_state(batch_size=bs)
-        dt_mem = self.dtlif.reset_mem()
-
-        mem1 = self.lif1.reset_mem()
-        # mem2 = self.lif2.reset_mem()
-
-        spk_hist, mem_hist = [], []
-        for i in range(seq_len):
-            curr = torch.clamp(x[:, i].unsqueeze(-1), min=-1.0, max=1.0)    # Shape: (batch_size, 1)
-            raf_spk, u, v, q, use_t1 = self.rafs(curr, hidden_states) # Output Shape: (batch_size, # of RAF neurons)
-
-            dt_spk, dt_mem = self.dtlif(x[:, i].unsqueeze(-1), dt_mem) # Output Shape: (batch_size, 1)
-
-            combined_spks = torch.cat((raf_spk, dt_spk), dim=1) # Shape: (batch_size, # of RAF neurons + 1)
-
-            out1 = self.fc1(combined_spks)
-            spk1, mem1 = self.lif1(out1, mem1)
-
-            # out2 = self.fc2(spk1)
-            # spk2, mem2 = self.lif2(out2, mem2)
-
-            spk_hist.append(spk1)
-            mem_hist.append(mem1)
-
-            hidden_states = raf_spk, u, v, q, use_t1
-
-        return torch.stack(spk_hist), torch.stack(mem_hist)
-    
-class Model2(nn.Module):
-    def __init__(
-            self, 
-            input_dim: int,
-            t1_t2_omegas: torch.Tensor,
-            t1_t2_bs: torch.Tensor,
-            threshold: torch.Tensor,
-            dt: float=1/24000,
-            learn_threshold: bool=False,
-            num_classes: int=3,
-            beta: float=0.9,
-            pos_threshold: float=1.0,
-            neg_threshold: float=-1.0,
-            reset_mechanism: str="subtract"
-    ):
-        super().__init__()
-
-        self.rafs = RAF(
-            input_dim=input_dim,
-            t1_t2_omegas=t1_t2_omegas,
-            t1_t2_bs=t1_t2_bs,
-            threshold=threshold,
-            dt=dt,
-            learn_omega=True,
-            learn_b=True,
-            learn_threshold=learn_threshold
-        )
-        self.dtlif = TwoThresholdLIF(
-            beta=beta,
-            pos_threshold=pos_threshold,
-            neg_threshold=neg_threshold,
-            reset_mechanism=reset_mechanism,
-        )
-
-        self.fc1 = nn.Linear(input_dim, num_classes, bias=True)
-        self.lif1 = snn.Leaky(beta=0.9, threshold=0.8, learn_beta=True, learn_threshold=True, spike_grad=step_double_gaussian(), reset_mechanism="subtract")
-        # self.fc2 = nn.Linear(30, num_classes)
-        # self.lif2 = snn.Leaky(beta=0.9, threshold=0.8, reset_mechanism="subtract")
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x shape: (batch_size, seq_len, input_dim)
-        bs, seq_len = x.shape
-        hidden_states = self.rafs.init_hidden_state(batch_size=bs)
-        dt_mem = self.dtlif.reset_mem()
-
-        mem1 = self.lif1.reset_mem()
-        # mem2 = self.lif2.reset_mem()
-
-        spk_hist, mem_hist = [], []
-        for i in range(seq_len):
-            curr = torch.clamp(x[:, i].unsqueeze(-1), min=-1.0, max=1.0)    # Shape: (batch_size, 1)
-            raf_spk, u, v, q, use_t1 = self.rafs(curr, hidden_states) # Output Shape: (batch_size, # of RAF neurons)
-            raf_spk = torch.sign(x[:, i].unsqueeze(-1)) * raf_spk
-
-            out1 = self.fc1(raf_spk)
-            spk1, mem1 = self.lif1(out1, mem1)
-
-            # out2 = self.fc2(spk1)
-            # spk2, mem2 = self.lif2(out2, mem2)
-
-            spk_hist.append(spk1)
-            mem_hist.append(mem1)
-
-            hidden_states = raf_spk, u, v, q, use_t1
-
-        return torch.stack(spk_hist), torch.stack(mem_hist)
+from model import (
+    DBRFDTLIFModel,
+)
 
 def dt_lif_neuron(filtered_signal, time_step, threshold1=0.8, threshold2=1.0, lif_tau=5e-3):
     u_hist = []
@@ -222,7 +73,12 @@ def dt_lif_neuron(filtered_signal, time_step, threshold1=0.8, threshold2=1.0, li
 
     return np.array(spk_hist), time_lif, u_hist
 
-def train_test_split(spike_classes, all_spk_trains, all_spike_signals, train_test_split_ratio):
+def train_test_split(
+    spike_classes, 
+    all_spk_trains, 
+    all_spike_signals, 
+    train_test_split_ratio
+):
     train_spk_train, test_spk_train = [], []
     train_signal, test_signal = [], []
     train_label, test_label = [], []
@@ -277,7 +133,7 @@ def visualise_test_results(net, data, label, predictions, raf_spk, raf_u, spk_fi
         # fig.legend(handles, labels, loc="lower left")
         # plt.grid(visible=True, which="major", axis="both", alpha=0.5, color="gray")
         # plt.grid(visible=True, which="minor", axis="both", alpha=0.4, color="lightgray")
-        plt.savefig(f"{PREDICTION_OUTPUT_PATH}batch_no_{batch_no}_signal_{i}_predicted_{predictions[i].detach().item()}_actual_{label[i].item()}.jpg")
+        plt.savefig(f"./prediction_plots/batch_no_{batch_no}_signal_{i}_predicted_{predictions[i].detach().item()}_actual_{label[i].item()}.jpg")
         plt.close()
 
 def train(
@@ -300,8 +156,9 @@ def train(
         net.train()
         curr_loss = 0.0
         for data, label in train_loader:
-            data = data.to(DEVICE)
-            label = label.to(DEVICE)
+            data = data.to(DEVICE)  # shape (batch_size, seq_len)
+            label = label.to(DEVICE) # shape (batch_size)
+            # print(f"data shape: {data.shape}, label shape: {label.shape}")
 
             spk_out, mem_out = net(data)
 
@@ -431,13 +288,6 @@ if __name__ == "__main__":
     BATCH_SIZE = 64
     NUM_EPOCHS= 50 # 30 was the original setting. 40 Gave pretty good result. 50 is the best so far
     MODEL_FILENAME = f"./spike_sorting_best_model.pth"
-    TEST_SAMPLES_OUTPUT_PATH = "./test_samples_output/"
-    # clean_images(TEST_SAMPLES_OUTPUT_PATH)
-    TRAIN_SAMPLES_OUTPUT_PATH = "./train_samples_output/"
-    # clean_images(TRAIN_SAMPLES_OUTPUT_PATH)
-    PREDICTION_OUTPUT_PATH = "./prediction_plots/"
-    # clean_images(PREDICTION_OUTPUT_PATH)
-    TRAINING_PRED_OUTPUT_PATH = "./training_prediction_plots/"
     # clean_images(TRAINING_PRED_OUTPUT_PATH)
     TRAINING_LOG_PATH = "./spike_sorting_training_log"
     if not os.path.exists(TRAINING_LOG_PATH):
@@ -458,141 +308,110 @@ if __name__ == "__main__":
     with open(TRAINING_LOG_NAME, "a") as f:
         f.write(f"Seed Number: {SEED}\n\n")
 
-    gt_noise_level = "02" # 005, 01, 015, 02
-    difficulty = "Difficult2"   # Difficult1, Difficult2, Easy1, Easy2
     filepath = "./intracortical_dataset/"
-    filename = f"C_{difficulty}_noise{gt_noise_level}.mat"
-
     # for lif, the threshold is: 0.5, 0.8, 1.2, 1.5, 1.8, 2.0, 2.5, 3.0
     dm_thresholds = np.array([0.2])
     thresholds = np.array([0.8])
-    select_top_x_t1_t2 = 10  # At least 9 to make meaningful accuracy
     train_test_split_ratio = 0.5
-    with open(TRAINING_LOG_NAME, "a") as f:
-        f.write(f"Current Setting: thresholds{dm_thresholds}, filename: {filename}\n\n")
-
-    signal, spike_class_label, spike_times, sampling_interval, sampling_rate, spike_pulse_1ms_idx_length, spike_classes, filtered_signal = load_dataset_intracortical(filepath, filename)
-    on_threshold = dm_thresholds
-    off_threshold = -dm_thresholds
-
-    # event_stream = generate_event_stream_dm(filtered_signal, on_threshold, off_threshold)
-    # spike_train = np.zeros_like(signal)
-    # spike_train[event_stream[:, 0].astype(int)] = event_stream[:, 3] - event_stream[:, 4]
-    spike_train = generate_event_stream_lif(filtered_signal, sampling_interval, uth=thresholds, lif_tau=sampling_interval, if_reconstruct=False)
     
-    all_spike_signals = {i: [] for i in spike_classes}
-    all_spk_trains = {i: [] for i in spike_classes}
-    for i in range(len(spike_times)):
-        # all_spike_signals[spike_class_label[i]].append(filtered_signal[spike_times[i] - 23:spike_times[i] + 23 + 1])
-        # all_spk_trains[spike_class_label[i]].append(spike_train[spike_times[i] - 23:spike_times[i] + 23 + 1])
-        all_spike_signals[spike_class_label[i]].append(filtered_signal[spike_times[i]:spike_times[i] + 70])
-        all_spk_trains[spike_class_label[i]].append(spike_train[spike_times[i]:spike_times[i] + 70])
+    for difficulty in ["Difficult1", "Difficult2", "Easy1", "Easy2"]:
+        for noise_level in ["005", "01", "015", "02"]:
+            filename = f"C_{difficulty}_noise{noise_level}.mat"
+    
+        with open(TRAINING_LOG_NAME, "a") as f:
+            f.write(f"Current Setting: thresholds{dm_thresholds}, filename: {filename}\n\n")
 
-    train_spk_train, test_spk_train, train_signal, test_signal, train_label, test_label = train_test_split(spike_classes, all_spk_trains, all_spike_signals, train_test_split_ratio)
+        signal, spike_class_label, spike_times, sampling_interval, sampling_rate, spike_pulse_1ms_idx_length, spike_classes, filtered_signal = load_dataset_intracortical(filepath, filename)
+        on_threshold = dm_thresholds
+        off_threshold = -dm_thresholds
 
-    ######## Setup Training & Test Tensors ########
-    training_spikes_tensor = torch.tensor(np.array(train_spk_train), dtype=torch.float32) # train_spk_train or filtered_spk_trains
-    training_labels_tensor = torch.tensor(train_label, dtype=torch.long) - 1   # Offset by 1 to start from 0
+        # Use DM to generate event stream and spike train
+        event_stream = generate_event_stream_dm(filtered_signal, on_threshold, off_threshold)
+        spike_train = np.zeros_like(signal)
+        spike_train[event_stream[:, 0].astype(int)] = event_stream[:, 1] - event_stream[:, 2]
 
-    test_spikes_tensor = torch.tensor(np.array(test_spk_train), dtype=torch.float32)    # test_spk_train or filtered_spk_trains_test
-    test_labels_tensor = torch.tensor(test_label, dtype=torch.long) - 1         # Offset by 1 to start from 0
+        # Use LIF to generate spike train
+        # spike_train = generate_event_stream_lif(filtered_signal, sampling_interval, uth=thresholds, lif_tau=sampling_interval, if_reconstruct=False)
+        
+        all_spike_signals = {i: [] for i in spike_classes}
+        all_spk_trains = {i: [] for i in spike_classes}
+        for i in range(len(spike_times)):
+            # all_spike_signals[spike_class_label[i]].append(filtered_signal[spike_times[i] - 23:spike_times[i] + 23 + 1])
+            # all_spk_trains[spike_class_label[i]].append(spike_train[spike_times[i] - 23:spike_times[i] + 23 + 1])
 
-    train_dataset = IntracorticalDataset(training_spikes_tensor, training_labels_tensor)
-    test_dataset = IntracorticalDataset(test_spikes_tensor, test_labels_tensor)
+            all_spike_signals[spike_class_label[i]].append(filtered_signal[spike_times[i] - 23:spike_times[i] + 23 + 1])
+            all_spk_trains[spike_class_label[i]].append(spike_train[spike_times[i] - 23:spike_times[i] + 23 + 1])
 
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=False)
-    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=False)
+        train_spk_train, test_spk_train, train_signal, test_signal, train_label, test_label = train_test_split(spike_classes, all_spk_trains, all_spike_signals, train_test_split_ratio)
 
-    raf_omegas1 = (torch.pi) / (torch.linspace(4, 24, steps=30, dtype=torch.float32) / 24000) # original shape (30,). was 2*pi
-    raf_omegas2 = (torch.pi) / (torch.linspace(4, 32, steps=30, dtype=torch.float32) / 24000) # original shape (30,). was 2*pi
-    raf_omegas = torch.stack((raf_omegas1, raf_omegas2), dim=-1) # stack to form (24, 2)
-    raf_bs = raf_omegas / 8
-    # raf_thresholds = torch.ones_like(raf_omegas) * 7.5e-5
-    initial_dv = 4.1667e-5
-    k_threshold1 = 1.5
-    k_threshold2 = 1.95  # original is 1.9
-    threshold1 = k_threshold1 * initial_dv # original value: 6e-5
-    threshold2 = k_threshold2 * initial_dv # original value: 7.8e-5
-    raf_thresholds = torch.tensor([threshold1, threshold2], dtype=torch.float32)
-    raf_thresholds = repeat(raf_thresholds, 't -> b t', b=raf_omegas.shape[0]).clone()
+        ######## Setup Training & Test Tensors ########
+        training_spikes_tensor = torch.tensor(np.array(train_spk_train), dtype=torch.float32) # train_spk_train or filtered_spk_trains
+        training_labels_tensor = torch.tensor(train_label, dtype=torch.long) - 1   # Offset by 1 to start from 0
 
-    net = Model(
-        input_dim=raf_omegas.shape[0],
-        t1_t2_omegas=raf_omegas,
-        t1_t2_bs=raf_bs,
-        threshold=raf_thresholds,
-        dt=1/24000,
-        learn_threshold=True,
-        num_classes=len(spike_classes),
-        beta=0.5,
-        pos_threshold=1.0,
-        neg_threshold=-1.0,
-        reset_mechanism="subtract"
-    )
+        test_spikes_tensor = torch.tensor(np.array(test_spk_train), dtype=torch.float32)    # test_spk_train or filtered_spk_trains_test
+        test_labels_tensor = torch.tensor(test_label, dtype=torch.long) - 1         # Offset by 1 to start from 0
 
-    # net = Model2(
-    #     input_dim=raf_omegas.shape[0],
-    #     t1_t2_omegas=raf_omegas,
-    #     t1_t2_bs=raf_bs,
-    #     threshold=raf_thresholds,
-    #     dt=1/24000,
-    #     learn_threshold=True,
-    #     num_classes=len(spike_classes),
-    #     beta=0.5,
-    #     pos_threshold=1.0,
-    #     neg_threshold=-1.0,
-    #     reset_mechanism="subtract"
-    # )
+        # print(f"Training dataset shape: {training_spikes_tensor.shape}, Training labels shape: {training_labels_tensor.shape}")
+        # print(f"Test dataset shape: {test_spikes_tensor.shape}, Test labels shape: {test_labels_tensor.shape}")
 
-    net.to(DEVICE)
-    test_net = copy.deepcopy(net)
-    loss_fn = SF.ce_count_loss()
-    # loss_fn = SF.loss.ce_temporal_loss(inverse="negate") # negate or reciprocal
+        train_dataset = IntracorticalDataset(training_spikes_tensor, training_labels_tensor)
+        test_dataset = IntracorticalDataset(test_spikes_tensor, test_labels_tensor)
 
-    # optimiser = torch.optim.AdamW(
-    #     [
-    #         {'params': net.rafs.t1_t2_omegas, 'lr': 1e-3},
-    #         {'params': net.rafs.t1_t2_bs, 'lr': 1e-3},
-    #         {'params': net.rafs.threshold, 'lr': 1e-5},
-    #         {'params': net.dtlif.beta, 'lr': 1e-2},
-    #         {'params': net.dtlif.pos_threshold, 'lr': 1e-1},
-    #         {'params': net.dtlif.neg_threshold, 'lr': 1e-1},
-    #         {'params': net.fc1.parameters()},
-    #         {'params': net.lif1.parameters()},
-    #     ], lr=1e-3, betas=(0.9, 0.999), weight_decay=0.01,
-    # ) # This setting seems to work the best
+        train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=False)
+        test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=False)
 
-    # optimiser = torch.optim.AdamW(
-    #     [
-    #         {'params': net.rafs.t1_t2_omegas, 'lr': 1e-4},
-    #         {'params': net.rafs.t1_t2_bs, 'lr': 1e-4},
-    #         {'params': net.rafs.threshold, 'lr': 1e-6},
-    #         {'params': net.dtlif.beta, 'lr': 1e-2},
-    #         {'params': net.dtlif.pos_threshold, 'lr': 1e-1},
-    #         {'params': net.dtlif.neg_threshold, 'lr': 1e-1},
-    #         {'params': net.fc1.parameters()},
-    #         {'params': net.lif1.parameters()},
-    #     ], lr=1e-3, betas=(0.9, 0.999), weight_decay=0.01,
-    # ) # This setting seems to work the best for Model()
+        raf_omegas1 = (torch.pi) / (torch.linspace(4, 24, steps=30, dtype=torch.float32) / 24000) # original shape (30,). was 2*pi
+        raf_omegas2 = (torch.pi) / (torch.linspace(4, 32, steps=30, dtype=torch.float32) / 24000) # original shape (30,). was 2*pi
+        raf_omegas = torch.stack((raf_omegas1, raf_omegas2), dim=-1) # stack to form (24, 2)
+        raf_bs = raf_omegas / 8
+        # raf_thresholds = torch.ones_like(raf_omegas) * 7.5e-5
+        initial_dv = 4.1667e-5
+        k_threshold1 = 1.5
+        k_threshold2 = 1.95  # original is 1.9
+        threshold1 = k_threshold1 * initial_dv # original value: 6e-5
+        threshold2 = k_threshold2 * initial_dv # original value: 7.8e-5
+        raf_thresholds = torch.tensor([threshold1, threshold2], dtype=torch.float32)
+        raf_thresholds = repeat(raf_thresholds, 't -> b t', b=raf_omegas.shape[0]).clone()
 
-    optimiser = torch.optim.AdamW(
-        [
-            {'params': net.rafs.t1_t2_omegas, 'lr': 1e-5},
-            {'params': net.rafs.t1_t2_bs, 'lr': 1e-5},
-            {'params': net.rafs.threshold, 'lr': 1e-7},
-            {'params': net.dtlif.beta, 'lr': 1e-2},
-            {'params': net.dtlif.pos_threshold, 'lr': 1e-1},
-            {'params': net.dtlif.neg_threshold, 'lr': 1e-1},
-            {'params': net.fc1.parameters()},
-            {'params': net.lif1.parameters()},
-        ], lr=1e-3, betas=(0.9, 0.999), weight_decay=0.01,
-    ) # This setting seems to work the best for Model2()
+        net = DBRFDTLIFModel(
+            input_dim=raf_omegas.shape[0],
+            dual_omegas=raf_omegas,
+            dual_bs=raf_bs,
+            dual_threshold=raf_thresholds,
+            dt=1/24000,
+            learn_dual_threshold=True,
+            num_classes=len(spike_classes),
+            beta=0.5,
+            pos_threshold=1.0,
+            neg_threshold=-1.0,
+            learn_beta=False,
+            learn_dtlif_threshold=True,
+            reset_mechanism="subtract"
+        )
 
-    # optimiser = torch.optim.RMSprop(net.parameters(), lr=1e-3, alpha=0.99, eps=1e-8)
-    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=NUM_EPOCHS, eta_min=1e-5)
-    # scheduler = torch.optim.lr_scheduler.StepLR(optimiser, step_size=30, gamma=0.1)
-    scheduler = None
+        net.to(DEVICE)
+        test_net = copy.deepcopy(net)
+        loss_fn = SF.ce_count_loss()
+        # loss_fn = SF.loss.ce_temporal_loss(inverse="negate") # negate or reciprocal
 
-    train(net, train_loader, optimiser, loss_fn, acc_mode="count", scheduler=scheduler) # acc_mode="temporal" or "count"
-    test(test_net, test_loader, acc_mode="count", final_test=True, visualise=True)
+        optimiser = torch.optim.AdamW(
+            [
+                {'params': net.rafs.dual_omegas, 'lr': 1e-5},
+                {'params': net.rafs.dual_bs, 'lr': 1e-5},
+                {'params': net.rafs.dual_threshold, 'lr': 1e-7},
+                {'params': net.dtlif.beta, 'lr': 1e-2},
+                {'params': net.dtlif.pos_threshold, 'lr': 1e-1},
+                {'params': net.dtlif.neg_threshold, 'lr': 1e-1},
+                {'params': net.fc1.parameters()},
+                {'params': net.lif1.parameters()},
+            ], lr=1e-3, betas=(0.9, 0.999), weight_decay=0.01,
+        ) # This setting seems to work the best for Model2()
+
+        # optimiser = torch.optim.RMSprop(net.parameters(), lr=1e-3, alpha=0.99, eps=1e-8)
+        # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=NUM_EPOCHS, eta_min=1e-5)
+        # scheduler = torch.optim.lr_scheduler.StepLR(optimiser, step_size=30, gamma=0.1)
+        scheduler = None
+
+        train(net, train_loader, optimiser, loss_fn, acc_mode="count", scheduler=scheduler) # acc_mode="temporal" or "count"
+        test(test_net, test_loader, acc_mode="count", final_test=True, visualise=True)
     

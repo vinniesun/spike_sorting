@@ -454,7 +454,7 @@ if __name__ == "__main__":
             if encoding_name == "dm":
                 event_stream = generate_event_stream_dm(filtered_signal, on_threshold, off_threshold)
                 spike_train = np.zeros_like(signal)
-                spike_train[event_stream[:, 0].astype(int)] = event_stream[:, 3] - event_stream[:, 4]
+                spike_train[event_stream[:, 0].astype(int)] = event_stream[:, 1] - event_stream[:, 2]
             elif encoding_name == "lif":
                 spike_train = generate_event_stream_lif(filtered_signal, sampling_interval, uth=thresholds, lif_tau=sampling_interval, if_reconstruct=False)
             elif encoding_name == "none":
@@ -462,8 +462,8 @@ if __name__ == "__main__":
                     if reconstruct_dm:
                         event_stream = generate_event_stream_dm(filtered_signal, on_threshold, off_threshold)
                         spike_train = np.zeros((filtered_signal.shape[0], 2))
-                        spike_train[event_stream[:, 0].astype(int), 0] = event_stream[:, 3]
-                        spike_train[event_stream[:, 0].astype(int), 1] = event_stream[:, 4]
+                        spike_train[event_stream[:, 0].astype(int), 0] = event_stream[:, 1]
+                        spike_train[event_stream[:, 0].astype(int), 1] = event_stream[:, 2]
 
                         spike_train = reconstruct_DDM(spike_train.T, thresholds)
                         print("\tFinished DM Reconstruction.")
