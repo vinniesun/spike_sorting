@@ -446,8 +446,6 @@ if __name__ == "__main__":
 
             signal, spike_class_label, spike_times, sampling_interval, sampling_rate, spike_pulse_1ms_idx_length, spike_classes, filtered_signal = load_dataset_intracortical(filepath, filename)
 
-            spike_times += 30 # shift forward by 1.5ms
-
             on_threshold = thresholds
             off_threshold = -thresholds
 
@@ -480,8 +478,8 @@ if __name__ == "__main__":
                 # all_spike_signals[spike_class_label[i]].append(filtered_signal[spike_times[i]:spike_times[i] + window_size])
                 # all_spk_trains[spike_class_label[i]].append(spike_train[spike_times[i]:spike_times[i] + window_size])
 
-                all_spike_signals[spike_class_label[i]].append(filtered_signal[spike_times[i] - 23:spike_times[i] + 23 + 1])
-                all_spk_trains[spike_class_label[i]].append(spike_train[spike_times[i] - 23:spike_times[i] + 23 + 1])
+                all_spike_signals[spike_class_label[i]].append(filtered_signal[spike_times[i] - 24:spike_times[i] + 24 + 1]) # original is +/- 23
+                all_spk_trains[spike_class_label[i]].append(spike_train[spike_times[i] - 24:spike_times[i] + 24 + 1])        # original is +/- 23
 
             ################ Plot to verify ################
             # for spike_class in spike_classes:

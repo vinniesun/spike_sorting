@@ -130,6 +130,8 @@ def load_dataset_intracortical(filepath: str, filename: str):
 
     spike_classes = np.unique(spike_class_label) # label is (1, 2, 3)
 
+    spike_times += 24 # shift forward by 1ms
+
     order = 2
     rp = 0.1
     rs = 40

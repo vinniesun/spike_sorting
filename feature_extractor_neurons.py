@@ -15,6 +15,7 @@ class DBRF(nn.Module):
         dual_omegas: torch.Tensor,
         dual_bs: torch.Tensor,
         dual_threshold: torch.Tensor,
+        dual_q_coeff: torch.Tensor,
         dt: float = 1/24000,
         learn_omega: bool = False,
         learn_b: bool = False,
@@ -45,6 +46,8 @@ class DBRF(nn.Module):
             self.dual_threshold = nn.Parameter(dual_threshold)
         else:
             self.register_buffer('dual_threshold', dual_threshold)    # Dimension is (num_of_raf_neurons, 2)
+
+        self.dual_q_coeff = dual_q_coeff  # Dimension is (num_of_raf_neurons, 2). Should this be made to be learnable?
 
         self.dt = dt
         
@@ -85,15 +88,17 @@ class DBRF(nn.Module):
         u_ = u + b * u * dt - omega * v * dt + x * dt
         v = v + omega * u * dt + b * v * dt
         # generate spike.
-        # select the correct dual_threshold based on self.select_t1_t2
+        # select the correct dual_threshold based on select_t1_t2
         current_threshold = einops.repeat(self.dual_threshold, 'd t -> b d t', b=x.shape[0])
         z = StepDoubleGaussianGrad.apply(torch.abs(u_) - current_threshold.gather(-1, select_t1_t2.unsqueeze(-1)).squeeze(-1) - q)
 
         # q = q.mul(0.9) + z # Original Scale
-        q = q.mul(1e-2) + z
+        current_q_coeff = einops.repeat(self.dual_q_coeff, 'd t -> b d t', b=x.shape[0])
+        # q = q.mul(1e-2) + z
+        q = q.mul(current_q_coeff.gather(-1, select_t1_t2.unsqueeze(-1)).squeeze(-1)) + z
 
         # output z should retain its polarity (i.e. -1 or 1)
-        # z = z * torch.sign(u_)
+        z = z * torch.sign(u_)
 
         return z, u_, v, q
 

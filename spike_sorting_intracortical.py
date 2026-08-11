@@ -285,7 +285,7 @@ if __name__ == "__main__":
     """
         Dataset downloaded from: https://figshare.le.ac.uk/articles/dataset/Simulated_dataset/11897595?file=21819066
     """
-    BATCH_SIZE = 64
+    BATCH_SIZE = 64 # 128 or 64
     NUM_EPOCHS= 50 # 30 was the original setting. 40 Gave pretty good result. 50 is the best so far
     MODEL_FILENAME = f"./spike_sorting_best_model.pth"
     # clean_images(TRAINING_PRED_OUTPUT_PATH)
@@ -295,7 +295,7 @@ if __name__ == "__main__":
     
     TRAINING_LOG_NAME = f"{TRAINING_LOG_PATH}/training_log_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.txt"
 
-    SEED = 5673 # 1337, 5673, 87353
+    SEED = 5673 # 1337, 5673, 1234
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
     random.seed(SEED)
     np.random.seed(SEED)
@@ -318,100 +318,109 @@ if __name__ == "__main__":
         for noise_level in ["005", "01", "015", "02"]:
             filename = f"C_{difficulty}_noise{noise_level}.mat"
     
-        with open(TRAINING_LOG_NAME, "a") as f:
-            f.write(f"Current Setting: thresholds{dm_thresholds}, filename: {filename}\n\n")
+            with open(TRAINING_LOG_NAME, "a") as f:
+                f.write(f"Current Setting: thresholds{dm_thresholds}, filename: {filename}\n\n")
 
-        signal, spike_class_label, spike_times, sampling_interval, sampling_rate, spike_pulse_1ms_idx_length, spike_classes, filtered_signal = load_dataset_intracortical(filepath, filename)
-        on_threshold = dm_thresholds
-        off_threshold = -dm_thresholds
+            signal, spike_class_label, spike_times, sampling_interval, sampling_rate, spike_pulse_1ms_idx_length, spike_classes, filtered_signal = load_dataset_intracortical(filepath, filename)
 
-        # Use DM to generate event stream and spike train
-        event_stream = generate_event_stream_dm(filtered_signal, on_threshold, off_threshold)
-        spike_train = np.zeros_like(signal)
-        spike_train[event_stream[:, 0].astype(int)] = event_stream[:, 1] - event_stream[:, 2]
+            on_threshold = dm_thresholds
+            off_threshold = -dm_thresholds
 
-        # Use LIF to generate spike train
-        # spike_train = generate_event_stream_lif(filtered_signal, sampling_interval, uth=thresholds, lif_tau=sampling_interval, if_reconstruct=False)
-        
-        all_spike_signals = {i: [] for i in spike_classes}
-        all_spk_trains = {i: [] for i in spike_classes}
-        for i in range(len(spike_times)):
-            # all_spike_signals[spike_class_label[i]].append(filtered_signal[spike_times[i] - 23:spike_times[i] + 23 + 1])
-            # all_spk_trains[spike_class_label[i]].append(spike_train[spike_times[i] - 23:spike_times[i] + 23 + 1])
+            # Use DM to generate event stream and spike train
+            event_stream = generate_event_stream_dm(filtered_signal, on_threshold, off_threshold)
+            spike_train = np.zeros_like(signal)
+            spike_train[event_stream[:, 0].astype(int)] = event_stream[:, 1] - event_stream[:, 2]
 
-            all_spike_signals[spike_class_label[i]].append(filtered_signal[spike_times[i] - 23:spike_times[i] + 23 + 1])
-            all_spk_trains[spike_class_label[i]].append(spike_train[spike_times[i] - 23:spike_times[i] + 23 + 1])
+            # Use LIF to generate spike train
+            # spike_train = generate_event_stream_lif(filtered_signal, sampling_interval, uth=thresholds, lif_tau=sampling_interval, if_reconstruct=False)
+            
+            all_spike_signals = {i: [] for i in spike_classes}
+            all_spk_trains = {i: [] for i in spike_classes}
+            
+            for i in range(len(spike_times)):
+                # all_spike_signals[spike_class_label[i]].append(filtered_signal[spike_times[i] - 23:spike_times[i] + 23 + 1])
+                # all_spk_trains[spike_class_label[i]].append(spike_train[spike_times[i] - 23:spike_times[i] + 23 + 1])
 
-        train_spk_train, test_spk_train, train_signal, test_signal, train_label, test_label = train_test_split(spike_classes, all_spk_trains, all_spike_signals, train_test_split_ratio)
+                # if i == 1:
+                #     print(spike_train[spike_times[i] - 23:spike_times[i] + 23])
+                with open(f"intracortical_spike_train_examples/{spike_class_label[i]}_spike_train_examples.txt", "a") as f:
+                    f.write(str(spike_train[spike_times[i] - 23:spike_times[i] + 23].tolist()) + "\n")
 
-        ######## Setup Training & Test Tensors ########
-        training_spikes_tensor = torch.tensor(np.array(train_spk_train), dtype=torch.float32) # train_spk_train or filtered_spk_trains
-        training_labels_tensor = torch.tensor(train_label, dtype=torch.long) - 1   # Offset by 1 to start from 0
+                all_spike_signals[spike_class_label[i]].append(filtered_signal[spike_times[i] - 23:spike_times[i] + 23])
+                all_spk_trains[spike_class_label[i]].append(spike_train[spike_times[i] - 23:spike_times[i] + 23])
 
-        test_spikes_tensor = torch.tensor(np.array(test_spk_train), dtype=torch.float32)    # test_spk_train or filtered_spk_trains_test
-        test_labels_tensor = torch.tensor(test_label, dtype=torch.long) - 1         # Offset by 1 to start from 0
+            print("Done collecting all of the spike trains")
+            train_spk_train, test_spk_train, train_signal, test_signal, train_label, test_label = train_test_split(spike_classes, all_spk_trains, all_spike_signals, train_test_split_ratio)
 
-        # print(f"Training dataset shape: {training_spikes_tensor.shape}, Training labels shape: {training_labels_tensor.shape}")
-        # print(f"Test dataset shape: {test_spikes_tensor.shape}, Test labels shape: {test_labels_tensor.shape}")
+            ######## Setup Training & Test Tensors ########
+            training_spikes_tensor = torch.tensor(np.array(train_spk_train), dtype=torch.float32) # train_spk_train or filtered_spk_trains
+            training_labels_tensor = torch.tensor(train_label, dtype=torch.long) - 1   # Offset by 1 to start from 0
 
-        train_dataset = IntracorticalDataset(training_spikes_tensor, training_labels_tensor)
-        test_dataset = IntracorticalDataset(test_spikes_tensor, test_labels_tensor)
+            test_spikes_tensor = torch.tensor(np.array(test_spk_train), dtype=torch.float32)    # test_spk_train or filtered_spk_trains_test
+            test_labels_tensor = torch.tensor(test_label, dtype=torch.long) - 1         # Offset by 1 to start from 0
 
-        train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=False)
-        test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=False)
+            # print(f"Training dataset shape: {training_spikes_tensor.shape}, Training labels shape: {training_labels_tensor.shape}")
+            # print(f"Test dataset shape: {test_spikes_tensor.shape}, Test labels shape: {test_labels_tensor.shape}")
 
-        raf_omegas1 = (torch.pi) / (torch.linspace(4, 24, steps=30, dtype=torch.float32) / 24000) # original shape (30,). was 2*pi
-        raf_omegas2 = (torch.pi) / (torch.linspace(4, 32, steps=30, dtype=torch.float32) / 24000) # original shape (30,). was 2*pi
-        raf_omegas = torch.stack((raf_omegas1, raf_omegas2), dim=-1) # stack to form (24, 2)
-        raf_bs = raf_omegas / 8
-        # raf_thresholds = torch.ones_like(raf_omegas) * 7.5e-5
-        initial_dv = 4.1667e-5
-        k_threshold1 = 1.5
-        k_threshold2 = 1.95  # original is 1.9
-        threshold1 = k_threshold1 * initial_dv # original value: 6e-5
-        threshold2 = k_threshold2 * initial_dv # original value: 7.8e-5
-        raf_thresholds = torch.tensor([threshold1, threshold2], dtype=torch.float32)
-        raf_thresholds = repeat(raf_thresholds, 't -> b t', b=raf_omegas.shape[0]).clone()
+            train_dataset = IntracorticalDataset(training_spikes_tensor, training_labels_tensor)
+            test_dataset = IntracorticalDataset(test_spikes_tensor, test_labels_tensor)
 
-        net = DBRFDTLIFModel(
-            input_dim=raf_omegas.shape[0],
-            dual_omegas=raf_omegas,
-            dual_bs=raf_bs,
-            dual_threshold=raf_thresholds,
-            dt=1/24000,
-            learn_dual_threshold=True,
-            num_classes=len(spike_classes),
-            beta=0.5,
-            pos_threshold=1.0,
-            neg_threshold=-1.0,
-            learn_beta=False,
-            learn_dtlif_threshold=True,
-            reset_mechanism="subtract"
-        )
+            train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=False)
+            test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=False)
 
-        net.to(DEVICE)
-        test_net = copy.deepcopy(net)
-        loss_fn = SF.ce_count_loss()
-        # loss_fn = SF.loss.ce_temporal_loss(inverse="negate") # negate or reciprocal
+            raf_omegas1 = (torch.pi) / (torch.linspace(4, 24, steps=30, dtype=torch.float32) / 24000) # original shape (30,). was 2*pi
+            raf_omegas2 = (torch.pi) / (torch.linspace(4, 32, steps=30, dtype=torch.float32) / 24000) # original shape (30,). was 2*pi
+            raf_omegas = torch.stack((raf_omegas1, raf_omegas2), dim=-1) # stack to form (24, 2)
+            raf_bs = raf_omegas / 8
+            # raf_thresholds = torch.ones_like(raf_omegas) * 7.5e-5
+            initial_dv = 4.1667e-5
+            k_threshold1 = 2.5
+            k_threshold2 = 3.0  # original is 1.9
+            threshold1 = k_threshold1 * initial_dv # original value: 6e-5
+            threshold2 = k_threshold2 * initial_dv # original value: 7.8e-5
+            raf_thresholds = torch.tensor([threshold1, threshold2], dtype=torch.float32)
+            raf_thresholds = repeat(raf_thresholds, 't -> b t', b=raf_omegas.shape[0]).clone()
 
-        optimiser = torch.optim.AdamW(
-            [
-                {'params': net.rafs.dual_omegas, 'lr': 1e-5},
-                {'params': net.rafs.dual_bs, 'lr': 1e-5},
-                {'params': net.rafs.dual_threshold, 'lr': 1e-7},
-                {'params': net.dtlif.beta, 'lr': 1e-2},
-                {'params': net.dtlif.pos_threshold, 'lr': 1e-1},
-                {'params': net.dtlif.neg_threshold, 'lr': 1e-1},
-                {'params': net.fc1.parameters()},
-                {'params': net.lif1.parameters()},
-            ], lr=1e-3, betas=(0.9, 0.999), weight_decay=0.01,
-        ) # This setting seems to work the best for Model2()
+            net = DBRFDTLIFModel(
+                dbrf_input_dim=raf_omegas.shape[0],
+                dtlif_input_dim=1,
+                dual_omegas=raf_omegas,
+                dual_bs=raf_bs,
+                dual_threshold=raf_thresholds,
+                dt=1/24000,
+                learn_dual_threshold=True,
+                num_classes=len(spike_classes),
+                beta=0.5,
+                pos_threshold=1.0,
+                neg_threshold=-1.0,
+                learn_beta=False,
+                learn_dtlif_threshold=True,
+                reset_mechanism="subtract"
+            )
 
-        # optimiser = torch.optim.RMSprop(net.parameters(), lr=1e-3, alpha=0.99, eps=1e-8)
-        # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=NUM_EPOCHS, eta_min=1e-5)
-        # scheduler = torch.optim.lr_scheduler.StepLR(optimiser, step_size=30, gamma=0.1)
-        scheduler = None
+            net.to(DEVICE)
+            test_net = copy.deepcopy(net)
+            loss_fn = SF.ce_count_loss()
+            # loss_fn = SF.loss.ce_temporal_loss(inverse="negate") # negate or reciprocal
 
-        train(net, train_loader, optimiser, loss_fn, acc_mode="count", scheduler=scheduler) # acc_mode="temporal" or "count"
-        test(test_net, test_loader, acc_mode="count", final_test=True, visualise=True)
+            optimiser = torch.optim.AdamW(
+                [
+                    {'params': net.rafs.dual_omegas, 'lr': 0.001},
+                    {'params': net.rafs.dual_bs, 'lr': 0.001},
+                    {'params': net.rafs.dual_threshold, 'lr': 1e-6},
+                    {'params': net.dtlif.beta, 'lr': 1e-2},
+                    {'params': net.dtlif.pos_threshold, 'lr': 1e-1},
+                    {'params': net.dtlif.neg_threshold, 'lr': 1e-1},
+                    {'params': net.fc1.parameters()},
+                    {'params': net.lif1.parameters()},
+                ], lr=1e-3, betas=(0.9, 0.999), weight_decay=0.01,
+            ) # This setting seems to work the best for Model2()
+
+            # optimiser = torch.optim.RMSprop(net.parameters(), lr=1e-3, alpha=0.99, eps=1e-8)
+            # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=NUM_EPOCHS, eta_min=1e-5)
+            # scheduler = torch.optim.lr_scheduler.StepLR(optimiser, step_size=30, gamma=0.1)
+            scheduler = None
+
+            train(net, train_loader, optimiser, loss_fn, acc_mode="count", scheduler=scheduler) # acc_mode="temporal" or "count"
+            test(test_net, test_loader, acc_mode="count", final_test=True, visualise=True)
     
