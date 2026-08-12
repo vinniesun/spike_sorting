@@ -42,10 +42,36 @@ from utils import (
     leaky_integrate_neuron,
     lif_neuron,
     load_dataset_intracortical,
+    train_test_split
 )
 from model import (
     DBRFDTLIFModel,
 )
+
+raf_interval_to_b_mapping = {
+    4: 2,
+    5: 2,
+    6: 2,
+    7: 3,
+    8: 3,
+    9: 3,
+    10: 4,
+    11: 4,
+    12: 4,
+    13: 5,
+    14: 5,
+    15: 5,
+    16: 6,
+    17: 6,
+    18: 6,
+    19: 7,
+    20: 7,
+    21: 7,
+    22: 8,
+    23: 8,
+    24: 8,
+    25: 8,
+}
 
 def dt_lif_neuron(filtered_signal, time_step, threshold1=0.8, threshold2=1.0, lif_tau=5e-3):
     u_hist = []
@@ -72,31 +98,6 @@ def dt_lif_neuron(filtered_signal, time_step, threshold1=0.8, threshold2=1.0, li
             spk_hist.append(float(0))
 
     return np.array(spk_hist), time_lif, u_hist
-
-def train_test_split(
-    spike_classes, 
-    all_spk_trains, 
-    all_spike_signals, 
-    train_test_split_ratio
-):
-    train_spk_train, test_spk_train = [], []
-    train_signal, test_signal = [], []
-    train_label, test_label = [], []
-    for spike_class in spike_classes:
-        idx = np.arange(len(all_spk_trains[spike_class]))
-        np.random.shuffle(idx)
-        train_idx = idx[:int(train_test_split_ratio * len(idx))]
-        test_idx = idx[int(train_test_split_ratio * len(idx)):]
-        for i in train_idx:
-            train_spk_train.append(all_spk_trains[spike_class][i])
-            train_signal.append(all_spike_signals[spike_class][i])
-            train_label.append(spike_class)
-        for i in test_idx:
-            test_spk_train.append(all_spk_trains[spike_class][i])
-            test_signal.append(all_spike_signals[spike_class][i])
-            test_label.append(spike_class)
-
-    return train_spk_train, test_spk_train, train_signal, test_signal, train_label, test_label
 
 def visualise_test_results(net, data, label, predictions, raf_spk, raf_u, spk_filt_hist, batch_no):
     for i in tqdm(range(data.shape[0])):
@@ -286,8 +287,7 @@ if __name__ == "__main__":
         Dataset downloaded from: https://figshare.le.ac.uk/articles/dataset/Simulated_dataset/11897595?file=21819066
     """
     BATCH_SIZE = 64 # 128 or 64
-    NUM_EPOCHS= 50 # 30 was the original setting. 40 Gave pretty good result. 50 is the best so far
-    MODEL_FILENAME = f"./spike_sorting_best_model.pth"
+    NUM_EPOCHS= 50 # 50 is the best so far
     # clean_images(TRAINING_PRED_OUTPUT_PATH)
     TRAINING_LOG_PATH = "./spike_sorting_training_log"
     if not os.path.exists(TRAINING_LOG_PATH):
@@ -317,6 +317,8 @@ if __name__ == "__main__":
     for difficulty in ["Difficult1", "Difficult2", "Easy1", "Easy2"]:
         for noise_level in ["005", "01", "015", "02"]:
             filename = f"C_{difficulty}_noise{noise_level}.mat"
+
+            MODEL_FILENAME = f"./intracortical_weights/{filename[:-4]}_spike_sorting_best_model.pth"
     
             with open(TRAINING_LOG_NAME, "a") as f:
                 f.write(f"Current Setting: thresholds{dm_thresholds}, filename: {filename}\n\n")
@@ -343,13 +345,13 @@ if __name__ == "__main__":
 
                 # if i == 1:
                 #     print(spike_train[spike_times[i] - 23:spike_times[i] + 23])
-                with open(f"intracortical_spike_train_examples/{spike_class_label[i]}_spike_train_examples.txt", "a") as f:
-                    f.write(str(spike_train[spike_times[i] - 23:spike_times[i] + 23].tolist()) + "\n")
+                # with open(f"intracortical_spike_train_examples/{spike_class_label[i]}_spike_train_examples.txt", "a") as f:
+                #     f.write(str(spike_train[spike_times[i] - 23:spike_times[i] + 23].tolist()) + "\n")
 
                 all_spike_signals[spike_class_label[i]].append(filtered_signal[spike_times[i] - 23:spike_times[i] + 23])
                 all_spk_trains[spike_class_label[i]].append(spike_train[spike_times[i] - 23:spike_times[i] + 23])
 
-            print("Done collecting all of the spike trains")
+            # print("Done collecting all of the spike trains")
             train_spk_train, test_spk_train, train_signal, test_signal, train_label, test_label = train_test_split(spike_classes, all_spk_trains, all_spike_signals, train_test_split_ratio)
 
             ######## Setup Training & Test Tensors ########
@@ -368,18 +370,42 @@ if __name__ == "__main__":
             train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=False)
             test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=False)
 
-            raf_omegas1 = (torch.pi) / (torch.linspace(4, 24, steps=30, dtype=torch.float32) / 24000) # original shape (30,). was 2*pi
-            raf_omegas2 = (torch.pi) / (torch.linspace(4, 32, steps=30, dtype=torch.float32) / 24000) # original shape (30,). was 2*pi
-            raf_omegas = torch.stack((raf_omegas1, raf_omegas2), dim=-1) # stack to form (24, 2)
-            raf_bs = raf_omegas / 8
-            # raf_thresholds = torch.ones_like(raf_omegas) * 7.5e-5
+            # raf_omegas1 = (torch.pi) / (torch.linspace(4, 24, steps=30, dtype=torch.float32) / 24000) # original shape (30,). was 2*pi
+            # raf_omegas2 = (torch.pi) / (torch.linspace(4, 32, steps=30, dtype=torch.float32) / 24000) # original shape (30,). was 2*pi
+            # raf_omegas = torch.stack((raf_omegas1, raf_omegas2), dim=-1) # stack to form (24, 2)
+            # raf_bs = raf_omegas / 8
+            # # raf_thresholds = torch.ones_like(raf_omegas) * 7.5e-5
+            # initial_dv = 4.1667e-5
+            # k_threshold1 = 2.5
+            # k_threshold2 = 3.0  # original is 1.9
+            # threshold1 = k_threshold1 * initial_dv # original value: 6e-5
+            # threshold2 = k_threshold2 * initial_dv # original value: 7.8e-5
+            # raf_thresholds = torch.tensor([threshold1, threshold2], dtype=torch.float32)
+            # raf_thresholds = repeat(raf_thresholds, 't -> b t', b=raf_omegas.shape[0]).clone()
+
+            interval1 = torch.arange(start=4, end=20, step=2, dtype=torch.float32)
+            interval2 = torch.arange(start=4, end=25, step=2, dtype=torch.float32)
+            raf_omega_interval = torch.cartesian_prod(interval1, interval2)
+            raf_omegas = torch.pi / (raf_omega_interval / 24000)
+        
+            raf_bs = torch.tensor([
+                [
+                    raf_omegas[i, 0] / raf_interval_to_b_mapping[raf_omega_interval[i, 0].item()], 
+                    raf_omegas[i, 1] / raf_interval_to_b_mapping[raf_omega_interval[i, 1].item()]
+                ] for i in range(raf_omegas.shape[0])
+            ])
+
             initial_dv = 4.1667e-5
-            k_threshold1 = 2.5
+            
+            k_threshold1 = 2
             k_threshold2 = 3.0  # original is 1.9
             threshold1 = k_threshold1 * initial_dv # original value: 6e-5
             threshold2 = k_threshold2 * initial_dv # original value: 7.8e-5
             raf_thresholds = torch.tensor([threshold1, threshold2], dtype=torch.float32)
             raf_thresholds = repeat(raf_thresholds, 't -> b t', b=raf_omegas.shape[0]).clone()
+
+            raf_q_coeff = torch.tensor([1e-1, 1e-3], dtype=torch.float32)
+            raf_q_coeff = repeat(raf_q_coeff, 't -> b t', b=raf_omegas.shape[0]).clone()
 
             net = DBRFDTLIFModel(
                 dbrf_input_dim=raf_omegas.shape[0],
@@ -387,12 +413,13 @@ if __name__ == "__main__":
                 dual_omegas=raf_omegas,
                 dual_bs=raf_bs,
                 dual_threshold=raf_thresholds,
+                dual_q_coeff=raf_q_coeff,
                 dt=1/24000,
                 learn_dual_threshold=True,
                 num_classes=len(spike_classes),
                 beta=0.5,
-                pos_threshold=1.0,
-                neg_threshold=-1.0,
+                pos_threshold=3.0,
+                neg_threshold=-3.0,
                 learn_beta=False,
                 learn_dtlif_threshold=True,
                 reset_mechanism="subtract"
@@ -420,7 +447,9 @@ if __name__ == "__main__":
             # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=NUM_EPOCHS, eta_min=1e-5)
             # scheduler = torch.optim.lr_scheduler.StepLR(optimiser, step_size=30, gamma=0.1)
             scheduler = None
+            print(f"Before training, RAF's threshold: {net.rafs.dual_threshold}")
 
             train(net, train_loader, optimiser, loss_fn, acc_mode="count", scheduler=scheduler) # acc_mode="temporal" or "count"
             test(test_net, test_loader, acc_mode="count", final_test=True, visualise=True)
-    
+
+            print(f"After training, RAF's threshold: {net.rafs.dual_threshold}")

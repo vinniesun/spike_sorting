@@ -26,6 +26,7 @@ class DBRFDTLIFModel(nn.Module):
             dual_omegas: torch.Tensor,
             dual_bs: torch.Tensor,
             dual_threshold: torch.Tensor,
+            dual_q_coeff: torch.Tensor,
             dt: float=1/24000,
             learn_dual_threshold: bool=False,
             num_classes: int=3,
@@ -51,6 +52,7 @@ class DBRFDTLIFModel(nn.Module):
                 dual_omegas=dual_omegas,
                 dual_bs=dual_bs,
                 dual_threshold=dual_threshold,
+                dual_q_coeff=dual_q_coeff,
                 dt=dt,
                 learn_omega=True,
                 learn_b=True,
@@ -98,8 +100,8 @@ class DBRFDTLIFModel(nn.Module):
 
         spk_hist, mem_hist = [], []
         for i in range(seq_len):
-            # curr = torch.clamp(x[:, i].unsqueeze(-1), min=-1.0, max=1.0)      # Shape: (batch_size, 1). This is just to take into account of the polarity
-            curr = x[:, i].unsqueeze(-1)    # Shape: (batch_size, 1)            # This is taking into account of both polarity and magnitude
+            curr = torch.clamp(x[:, i].unsqueeze(-1), min=-1.0, max=1.0)      # Shape: (batch_size, 1). This is just to take into account of the polarity
+            # curr = x[:, i].unsqueeze(-1)    # Shape: (batch_size, 1)            # This is taking into account of both polarity and magnitude
 
             if self.dbrf_input_dim > 0:
                 raf_spk, u, v, q, use_t1 = self.rafs(curr, hidden_states) # Output Shape: (batch_size, # of RAF neurons)

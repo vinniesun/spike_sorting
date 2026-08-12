@@ -47,7 +47,7 @@ class DBRF(nn.Module):
         else:
             self.register_buffer('dual_threshold', dual_threshold)    # Dimension is (num_of_raf_neurons, 2)
 
-        self.dual_q_coeff = dual_q_coeff  # Dimension is (num_of_raf_neurons, 2). Should this be made to be learnable?
+        self.register_buffer('dual_q_coeff', dual_q_coeff)  # Dimension is (num_of_raf_neurons, 2). Should this be made to be learnable?
 
         self.dt = dt
         

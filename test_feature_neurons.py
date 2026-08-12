@@ -201,12 +201,12 @@ if __name__ == "__main__":
     # )
     # raf_omegas = torch.stack((raf_omegas1, raf_omegas2), dim=-1) # stack to form (24, 2)
 
-    interval1 = torch.arange(start=4, end=20, dtype=torch.float32)
-    interval2 = torch.arange(start=4, end=25, dtype=torch.float32)
+    interval1 = torch.arange(start=4, end=20, step=2, dtype=torch.float32)
+    interval2 = torch.arange(start=4, end=25, step=2, dtype=torch.float32)
 
     raf_omega_interval = torch.cartesian_prod(interval1, interval2)
     raf_omegas = torch.pi / (raf_omega_interval / 24000)
-
+    print(raf_omegas.shape)
     # raf_bs = raf_omegas / 8 
 
     raf_bs = torch.tensor([
@@ -220,12 +220,12 @@ if __name__ == "__main__":
     # raf_omegas = raf_omegas[idx]
     # raf_bs = raf_bs[idx]
     raf_omegas = raf_omegas[25:25+input_dim]
-    raf_bs = raf_bs[:input_dim]
+    raf_bs = raf_bs[25:25+input_dim]
 
     initial_dv = 4.1667e-5
 
     k_threshold1 = 2
-    k_threshold2 = 3.5  # original is 1.9
+    k_threshold2 = 3.0  # original is 1.9
     threshold1 = k_threshold1 * initial_dv # original value: 6e-5
     threshold2 = k_threshold2 * initial_dv # original value: 7.8e-5
     raf_thresholds = torch.tensor([threshold1, threshold2], dtype=torch.float32)
@@ -281,26 +281,6 @@ if __name__ == "__main__":
         learn_b=False,
         learn_dual_threshold=False
     )
-
-    # spike_train = torch.zeros((batch_size, seq_len), dtype=torch.float32)
-
-    # spike_train[0, 19] = 1.0
-    # spike_train[0, 20] = 2.0
-    # spike_train[0, 21] = 1.0
-    # spike_train[0, 23] = -3.0
-    # spike_train[0, 24] = -3.0
-    # spike_train[0, 25] = -1.0
-    # spike_train[0, 31] = 1.0
-    # spike_train[0, 35] = 1.0
-    # spike_train[0, 43] = 1.0
-
-    # spike_train[1, 16] = -1.0
-    # spike_train[1, 19] = 2.0
-    # spike_train[1, 20] = 3.0
-    # spike_train[1, 23] = -2.0
-    # spike_train[1, 24] = -2.0
-    # spike_train[1, 25] = -1.0
-    # spike_train[1, -2] = 1.0
 
     spike_train = torch.tensor(
         [

@@ -210,3 +210,28 @@ def reconstruct_DDM(event_counts, spike_amplitude):
         current_value = current_value - event_counts[1][i-1] * spike_amplitude
         reconstructed_signal[i] = current_value[0]
     return reconstructed_signal
+
+def train_test_split(
+    spike_classes, 
+    all_spk_trains, 
+    all_spike_signals, 
+    train_test_split_ratio
+):
+    train_spk_train, test_spk_train = [], []
+    train_signal, test_signal = [], []
+    train_label, test_label = [], []
+    for spike_class in spike_classes:
+        idx = np.arange(len(all_spk_trains[spike_class]))
+        np.random.shuffle(idx)
+        train_idx = idx[:int(train_test_split_ratio * len(idx))]
+        test_idx = idx[int(train_test_split_ratio * len(idx)):]
+        for i in train_idx:
+            train_spk_train.append(all_spk_trains[spike_class][i])
+            train_signal.append(all_spike_signals[spike_class][i])
+            train_label.append(spike_class)
+        for i in test_idx:
+            test_spk_train.append(all_spk_trains[spike_class][i])
+            test_signal.append(all_spike_signals[spike_class][i])
+            test_label.append(spike_class)
+
+    return train_spk_train, test_spk_train, train_signal, test_signal, train_label, test_label
