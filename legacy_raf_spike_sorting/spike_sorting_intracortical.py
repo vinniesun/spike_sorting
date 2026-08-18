@@ -312,7 +312,7 @@ if __name__ == "__main__":
     # for lif, the threshold is: 0.5, 0.8, 1.2, 1.5, 1.8, 2.0, 2.5, 3.0
     dm_thresholds = np.array([0.2])
     thresholds = np.array([0.8])
-    train_test_split_ratio = 0.5
+    train_test_split_ratio = 0.7
     
     for difficulty in ["Difficult1", "Difficult2", "Easy1", "Easy2"]:
         for noise_level in ["005", "01", "015", "02"]:
@@ -447,9 +447,9 @@ if __name__ == "__main__":
             # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=NUM_EPOCHS, eta_min=1e-5)
             # scheduler = torch.optim.lr_scheduler.StepLR(optimiser, step_size=30, gamma=0.1)
             scheduler = None
-            print(f"Before training, RAF's threshold: {net.rafs.dual_threshold}")
+            # print(f"Before training, RAF's threshold: {net.rafs.dual_threshold}")
 
             train(net, train_loader, optimiser, loss_fn, acc_mode="count", scheduler=scheduler) # acc_mode="temporal" or "count"
             test(test_net, test_loader, acc_mode="count", final_test=True, visualise=True)
 
-            print(f"After training, RAF's threshold: {net.rafs.dual_threshold}")
+            # print(f"After training, RAF's threshold: {net.rafs.dual_threshold}")

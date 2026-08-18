@@ -286,7 +286,7 @@ if __name__ == "__main__":
     """
         Dataset downloaded from: https://figshare.le.ac.uk/articles/dataset/Simulated_dataset/11897595?file=21819066
     """
-    BATCH_SIZE = 64 # 128 or 64
+    BATCH_SIZE = 128 # 128 or 64
     NUM_EPOCHS= 50 # 50 is the best so far
     MODEL_FILENAME = f"./intracortical_weights/spike_sorting_best_model.pth"
     # clean_images(TRAINING_PRED_OUTPUT_PATH)
@@ -307,21 +307,21 @@ if __name__ == "__main__":
         torch.backends.cudnn.benchmark = False
 
     with open(TRAINING_LOG_NAME, "a") as f:
-        f.write(f"Seed Number: {SEED}\n\n")
+        f.write(f"Seed Number: {SEED}\nTraining on all files\n\n")
 
     filepath = "./intracortical_dataset/"
     # for lif, the threshold is: 0.5, 0.8, 1.2, 1.5, 1.8, 2.0, 2.5, 3.0
     dm_thresholds = np.array([0.2])
     thresholds = np.array([0.8])
-    train_test_split_ratio = 0.5
+    train_test_split_ratio = 0.7
 
-    complete_train_data, complete_train_labels, complete_test_data, complete_test_labels = [], [], [], []
+    complete_train_data, complete_train_labels, complete_test_data, complete_test_labels = [], [], dict(), dict()
     for difficulty in ["Difficult1", "Difficult2", "Easy1", "Easy2"]:
         for noise_level in ["005", "01", "015", "02"]:
             filename = f"C_{difficulty}_noise{noise_level}.mat"
     
             with open(TRAINING_LOG_NAME, "a") as f:
-                f.write(f"Current Setting: thresholds{dm_thresholds}, filename: {filename}\n\n")
+                f.write(f"Currently Loading: filename: {filename} at threshold: {dm_thresholds}, \n\n")
 
             signal, spike_class_label, spike_times, sampling_interval, sampling_rate, spike_pulse_1ms_idx_length, spike_classes, filtered_signal = load_dataset_intracortical(filepath, filename)
 
@@ -363,19 +363,19 @@ if __name__ == "__main__":
 
             complete_train_data.append(training_spikes_tensor)
             complete_train_labels.append(training_labels_tensor)
-            complete_test_data.append(test_spikes_tensor)
-            complete_test_labels.append(test_labels_tensor)
+            complete_test_data[filename[:-4]] = test_spikes_tensor
+            complete_test_labels[filename[:-4]] = test_labels_tensor
 
     complete_train_data = torch.cat(complete_train_data, dim=0)
     complete_train_labels = torch.cat(complete_train_labels, dim=0)
-    complete_test_data = torch.cat(complete_test_data, dim=0)
-    complete_test_labels = torch.cat(complete_test_labels, dim=0)
+    # complete_test_data = torch.cat(complete_test_data, dim=0)
+    # complete_test_labels = torch.cat(complete_test_labels, dim=0)
 
     train_dataset = IntracorticalDataset(complete_train_data, complete_train_labels)
-    test_dataset = IntracorticalDataset(complete_test_data, complete_test_labels)
+    # test_dataset = IntracorticalDataset(complete_test_data, complete_test_labels)
 
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=False)
-    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=False)
+    # test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=False)
 
     # raf_omegas1 = (torch.pi) / (torch.linspace(4, 24, steps=30, dtype=torch.float32) / 24000) # original shape (30,). was 2*pi
     # raf_omegas2 = (torch.pi) / (torch.linspace(4, 32, steps=30, dtype=torch.float32) / 24000) # original shape (30,). was 2*pi
@@ -414,9 +414,13 @@ if __name__ == "__main__":
     raf_q_coeff = torch.tensor([1e-1, 1e-3], dtype=torch.float32)
     raf_q_coeff = repeat(raf_q_coeff, 't -> b t', b=raf_omegas.shape[0]).clone()
 
+    betas = torch.linspace(start=0.01, end=1, steps=raf_omegas.shape[0], dtype=torch.float32)
+    pos_thresholds = torch.ones(raf_omegas.shape[0], dtype=torch.float32) * 3.0
+    neg_thresholds = torch.ones(raf_omegas.shape[0], dtype=torch.float32) * -3.0
+
     net = DBRFDTLIFModel(
         dbrf_input_dim=raf_omegas.shape[0],
-        dtlif_input_dim=1,
+        dtlif_input_dim=raf_omegas.shape[0],
         dual_omegas=raf_omegas,
         dual_bs=raf_bs,
         dual_threshold=raf_thresholds,
@@ -424,10 +428,10 @@ if __name__ == "__main__":
         dt=1/24000,
         learn_dual_threshold=True,
         num_classes=len(spike_classes),
-        beta=0.5,
-        pos_threshold=3.0,
-        neg_threshold=-3.0,
-        learn_beta=False,
+        beta=betas,
+        pos_threshold=pos_thresholds,
+        neg_threshold=neg_thresholds,
+        learn_beta=True,
         learn_dtlif_threshold=True,
         reset_mechanism="subtract"
     )
@@ -439,12 +443,12 @@ if __name__ == "__main__":
 
     optimiser = torch.optim.AdamW(
         [
-            {'params': net.rafs.dual_omegas, 'lr': 0.001},
-            {'params': net.rafs.dual_bs, 'lr': 0.001},
-            {'params': net.rafs.dual_threshold, 'lr': 1e-6},
-            {'params': net.dtlif.beta, 'lr': 1e-2},
-            {'params': net.dtlif.pos_threshold, 'lr': 1e-1},
-            {'params': net.dtlif.neg_threshold, 'lr': 1e-1},
+            {'params': net.rafs.dual_omegas, 'lr': 0.00001},
+            {'params': net.rafs.dual_bs, 'lr': 0.00001},
+            {'params': net.rafs.dual_threshold, 'lr': 1e-8},
+            {'params': net.dtlif.beta, 'lr': 1e-4},
+            {'params': net.dtlif.pos_threshold, 'lr': 1e-4},
+            {'params': net.dtlif.neg_threshold, 'lr': 1e-4},
             {'params': net.fc1.parameters()},
             {'params': net.lif1.parameters()},
         ], lr=1e-3, betas=(0.9, 0.999), weight_decay=0.01,
@@ -454,9 +458,15 @@ if __name__ == "__main__":
     # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=NUM_EPOCHS, eta_min=1e-5)
     # scheduler = torch.optim.lr_scheduler.StepLR(optimiser, step_size=30, gamma=0.1)
     scheduler = None
-    print(f"Before training, RAF's threshold: {net.rafs.dual_threshold}")
 
     train(net, train_loader, optimiser, loss_fn, acc_mode="count", scheduler=scheduler) # acc_mode="temporal" or "count"
-    test(test_net, test_loader, acc_mode="count", final_test=True, visualise=True)
+    for difficulty in ["Difficult1", "Difficult2", "Easy1", "Easy2"]:
+        for noise_level in ["005", "01", "015", "02"]:
+            filename = f"C_{difficulty}_noise{noise_level}.mat"
 
-    print(f"After training, RAF's threshold: {net.rafs.dual_threshold}")
+            test_dataset = IntracorticalDataset(complete_test_data[filename[:-4]], complete_test_labels[filename[:-4]])
+            test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=False)
+
+            print(f"Testing on {filename[:-4]}...")
+            test(test_net, test_loader, acc_mode="count", final_test=True, visualise=True)
+

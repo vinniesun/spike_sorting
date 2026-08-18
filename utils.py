@@ -154,7 +154,9 @@ def reconstruction_lif(lif_data, time_step=1e-3, reconstruct_tau=0.05, alpha=0.4
     
     rp = 0.1
     rs = 40
-    cut_off_freq = 5000 # 5000 for intracortical
+    cut_off_freq = 3000 # 5000 for intracortical. Try reducing this to make the reconstructed signal smoother.
+    # A 2nd-order Butterworth filter has a relatively gentle roll-off. If high-frequency spike artifacts remain, you can increase the order:
+    # to 4 or 6
     b, a = butter(order, 2*cut_off_freq/(1/time_step), btype='low')
     # b, a = ellip(order, rp, rs, 2*cut_off_freq/(1/time_step), btype="low")
     # b, a = bessel(order, 2*cut_off_freq/(1/time_step), btype='low')
