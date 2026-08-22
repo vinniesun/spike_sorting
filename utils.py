@@ -5,6 +5,8 @@ from scipy.signal import ellip, lfilter, butter
 import torch
 from torch.utils.data import Dataset
 
+from typing import List, Tuple
+
 class IntracorticalDataset(Dataset):
     def __init__(self, spikes: torch.Tensor, labels: torch.Tensor):
         self.spikes = spikes
@@ -87,7 +89,7 @@ def generate_event_stream_lif(filtered_signal, time_step, uth, lif_tau, if_recon
 
 def leaky_integrate_neuron(U, time_step=1e-3, I=0, R=5, Urest=0, tau=5e-3):
     # tau = R*C
-    U = (U) + (time_step/tau)*(-(U) + I*R) - Urest
+    U += (time_step/tau)*(-(U) + I*R) - Urest
     return U
 
 def lif_neuron(filtered_signal, time_step=1e-3, uth=0.8, lif_tau=5e-3):
@@ -154,7 +156,7 @@ def reconstruction_lif(lif_data, time_step=1e-3, reconstruct_tau=0.05, alpha=0.4
     
     rp = 0.1
     rs = 40
-    cut_off_freq = 3000 # 5000 for intracortical. Try reducing this to make the reconstructed signal smoother.
+    cut_off_freq = 5000 # 5000 for intracortical. Try reducing this to make the reconstructed signal smoother.
     # A 2nd-order Butterworth filter has a relatively gentle roll-off. If high-frequency spike artifacts remain, you can increase the order:
     # to 4 or 6
     b, a = butter(order, 2*cut_off_freq/(1/time_step), btype='low')
@@ -181,7 +183,7 @@ def calc_rmse(data, reconstructed_signal, spikeTimeGT):
 
     return rmse 
 
-def train_test_split(spike_classes, all_spk_trains, all_spike_signals, train_test_split_ratio):
+def train_test_split_spike_sorting(spike_classes, all_spk_trains, all_spike_signals, train_test_split_ratio):
     train_spk_train, test_spk_train = [], []
     train_signal, test_signal = [], []
     train_label, test_label = [], []
@@ -210,10 +212,10 @@ def reconstruct_DDM(event_counts, spike_amplitude):
         current_value = reconstructed_signal[i-1]
         current_value = current_value + event_counts[0][i-1] * spike_amplitude
         current_value = current_value - event_counts[1][i-1] * spike_amplitude
-        reconstructed_signal[i] = current_value[0]
+        reconstructed_signal[i] = current_value
     return reconstructed_signal
 
-def train_test_split(
+def train_test_split_spike_sorting(
     spike_classes, 
     all_spk_trains, 
     all_spike_signals, 
@@ -237,3 +239,96 @@ def train_test_split(
             test_label.append(spike_class)
 
     return train_spk_train, test_spk_train, train_signal, test_signal, train_label, test_label
+
+def train_test_split_spike_detection(
+    spike_train,
+    spike_times,
+    split_ratio=0.8,
+    label_window=3
+):
+    # assuming spike times have already been shifted forward
+    split_num = int(spike_times.shape[0] * split_ratio)
+
+    train_spike_times = spike_times[:split_num]
+    test_spike_times = spike_times[split_num:]
+
+    spike_labels = np.zeros_like(spike_train) # shape (seq_len)
+
+    for spike_time in spike_times:
+        spike_labels[spike_time - label_window: spike_time + (2*label_window) + 1] = 1
+
+    train_spike_train = spike_train[:spike_times[split_num] + 24]
+    train_spike_labels = spike_labels[:spike_times[split_num] + 24]
+
+    test_spike_train = spike_train[spike_times[split_num] + 24:]
+    test_spike_labels = spike_labels[spike_times[split_num] + 24:]
+    test_spike_times -= train_spike_train.shape[0] # shift the test spike times to start from 0
+
+    return train_spike_train, train_spike_labels, test_spike_train, test_spike_labels, train_spike_times, test_spike_times
+
+def create_training_dataset_spike_detection(
+    spike_train,
+    spike_labels,
+    spike_times,
+    max_length=240,
+) -> Tuple[List[np.ndarray], List[np.ndarray]]:
+    spike_samples = []
+    spike_samples_labels = []
+    for i in range(spike_times.shape[0]):
+        spike_samples.append(torch.tensor(spike_train[spike_times[i] + 24 - max_length:spike_times[i] + 24], dtype=torch.float32))
+        spike_samples_labels.append(torch.tensor(spike_labels[spike_times[i] + 24 - max_length:spike_times[i] + 24], dtype=torch.long))
+
+    return spike_samples, spike_samples_labels
+
+def reset_mech(reset_mechanism: str, u: float, lif_threshold) -> float:
+    if reset_mechanism == "none":
+        u_rest = 0
+    elif reset_mechanism == "subtract":
+        u_rest = lif_threshold
+    elif reset_mechanism == "zero":
+        u_rest = u
+    else:
+        raise ValueError(f"Invalid reset_mechanism: {reset_mechanism}. Must be one of 'none', 'subtract', or 'zero'.")
+
+    return u_rest
+
+def dv_to_lif_spike_gen(
+    signal,
+    lif_threshold,
+    sampling_interval=1/24000,
+    lif_tau=1/24000,
+    reset_mechanism="none"
+):
+    length_of_signal = signal.shape[0]
+    # dm specific variable
+    last_reset_voltage = 0
+
+    # lif specific variable
+    u = 0
+    u_rest = 0
+    time_lif = np.linspace(0, length_of_signal, length_of_signal, dtype=np.float32)
+
+    u_hist, spk_hist = [], []
+    for i in range(length_of_signal):
+        u_hist.append(u)
+
+        dv = signal[i] - last_reset_voltage
+
+        u = leaky_integrate_neuron(u, time_step=sampling_interval, I=dv, Urest=u_rest, tau=lif_tau)
+
+        if u >= lif_threshold:
+            # u_rest = 0 # not resetting seems to work the best
+            # u_rest = 0 if reset_mechanism == "none" else (lif_threshold if reset_mechanism == "subtract" else u)
+            u_rest = reset_mech(reset_mechanism, u, lif_threshold)
+            spk_hist.append(float(1))
+        elif u <= -lif_threshold:
+            # u_rest = -0 # not resetting seems to work the best
+            u_rest = reset_mech(reset_mechanism, -u, -lif_threshold)
+            spk_hist.append(float(-1))
+        else:
+            u_rest = 0
+            spk_hist.append(float(0))
+
+        last_reset_voltage = signal[i]
+
+    return np.array(u_hist), np.array(spk_hist), time_lif

@@ -16,3 +16,5 @@ train_samples_output/
 interval_statistics/
 spike_sorting_training_log/
 intracortical_spike_train_examples/
+1d_conv_training_log/
+lstm_training_log/

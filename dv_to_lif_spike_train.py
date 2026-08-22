@@ -1,13 +1,17 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
+import plotly.graph_objects as go
+import plotly.io as pio
+
 from utils import (
     load_dataset_intracortical,
     leaky_integrate_neuron,
     generate_event_stream_dm,
     generate_event_stream_lif,
     reconstruction_lif,
-    calc_rmse
+    calc_rmse,
+    dv_to_lif_spike_gen
 )
 
 def lif_reconstruct_dv(spikes, dt, tau, lif_threshold=1.0):
@@ -54,48 +58,12 @@ def compression_ratio(filtered_signal, spike_train):
 
     return tdr_fs / tdr_dm
 
-def dv_to_lif_spike_gen(
-    signal,
-    lif_threshold,
-    sampling_interval=1/24000,
-    lif_tau=1/24000,
-):
-    length_of_signal = signal.shape[0]
-    # dm specific variable
-    last_reset_voltage = 0
-
-    # lif specific variable
-    u = 0
-    u_rest = 0
-    time_lif = np.linspace(0, length_of_signal, length_of_signal, dtype=np.float32)
-
-    u_hist, spk_hist = [], []
-    for i in range(length_of_signal):
-        u_hist.append(u)
-
-        dv = signal[i] - last_reset_voltage
-
-        u = leaky_integrate_neuron(u, time_step=sampling_interval, I=dv, Urest=u_rest, tau=lif_tau)
-
-        if u >= lif_threshold:
-            u_rest = lif_threshold/2 # not resetting seems to work the best
-            spk_hist.append(float(1))
-        elif u <= -lif_threshold:
-            u_rest = -lif_threshold/2 # not resetting seems to work the best
-            spk_hist.append(float(-1))
-        else:
-            u_rest = 0
-            spk_hist.append(float(0))
-
-        last_reset_voltage = signal[i]
-
-    return np.array(u_hist), np.array(spk_hist), time_lif
-
 if __name__ == "__main__":
     filepath = "./intracortical_dataset/"
 
     dm_threshold = np.array([0.2])
-    lif_threshold = 0.3
+    lif_threshold = 0.2
+    reset_mechanism = "none" # "none", "subtract", "zero"
 
     for difficulty in ["Difficult1", "Difficult2", "Easy1", "Easy2"]:
         for noise_level in ["005", "01", "015", "02"]:
@@ -109,10 +77,11 @@ if __name__ == "__main__":
                 signal=filtered_signal,
                 lif_threshold=lif_threshold,
                 sampling_interval=sampling_interval,
-                lif_tau=8*sampling_interval,
+                lif_tau=4*sampling_interval,
+                reset_mechanism=reset_mechanism
             )
 
-            reconstructed_signal = reconstruction_lif(dv_spk_hist, time_step=sampling_interval, reconstruct_tau=10*sampling_interval, alpha=0.8, order=2)
+            reconstructed_signal = reconstruction_lif(dv_spk_hist, time_step=sampling_interval, reconstruct_tau=6*sampling_interval, alpha=0.8, order=2)
             # reconstructed_signal = lif_reconstruct_signal(dv_spk_hist, dt=sampling_interval, tau=8*sampling_interval, V0=0.0, lif_threshold=lif_threshold)[1]
             rmse = calc_rmse(filtered_signal, reconstructed_signal, spike_times)
 
@@ -122,6 +91,7 @@ if __name__ == "__main__":
             event_stream = generate_event_stream_dm(filtered_signal, dm_threshold, -dm_threshold)
             dm_spike_train = np.zeros_like(signal)
             dm_spike_train[event_stream[:, 0].astype(int)] = event_stream[:, 1] - event_stream[:, 2]
+            dm_spike_train = np.clip(dm_spike_train, -1, 1)
 
             # generate lif spike train for comparison
             lif_spike_train = generate_event_stream_lif(filtered_signal, sampling_interval, uth=lif_threshold, lif_tau=sampling_interval, if_reconstruct=False)
@@ -166,3 +136,116 @@ if __name__ == "__main__":
             plt.tight_layout()
             plt.savefig(f"./compare_spike_trains/{difficulty}_noise{noise_level}.jpg", dpi=300)
             plt.close()
+            # time = np.arange(24000) / 24000
+            # for i in range(0, len(filtered_signal), 24000):
+            #     start, end = i, i + 24000
+
+            #     fig = go.Figure()
+
+            #     fig.add_trace(
+            #         go.Scatter(
+            #             x=time,
+            #             y=filtered_signal[start:end] + 4,
+            #             name="Filtered Signal",
+            #             mode="lines",
+            #             line=dict(color="blue")
+            #         )
+            #     )
+
+            #     dm_here = dm_spike_train[start:end]
+            #     pos_idx = np.where(dm_here > 0)[0]
+            #     neg_idx = np.where(dm_here < 0)[0]
+            #     fig.add_trace(
+            #         go.Scatter(
+            #             x=time[pos_idx],
+            #             y=dm_here[pos_idx] * 0.3 - 0.15,
+            #             name="DM On",
+            #             mode="markers",
+            #             marker=dict(
+            #                 symbol="line-ns-open",
+            #                 color="red",
+            #                 size=20,
+            #                 line=dict(width=2),
+            #             ),
+            #         )
+            #     )
+            #     fig.add_trace(
+            #         go.Scatter(
+            #             x=time[neg_idx],
+            #             y=dm_here[neg_idx] * 0.3 + 0.15,
+            #             name="DM Off",
+            #             mode="markers",
+            #             marker=dict(
+            #                 symbol="line-ns-open",
+            #                 color="red",
+            #                 size=20,
+            #                 line=dict(width=2),
+            #             ),
+            #         )
+            #     )
+
+            #     lif_here = lif_spike_train[start:end]
+            #     pos_idx = np.where(lif_here > 0)[0]
+            #     neg_idx = np.where(lif_here < 0)[0]
+            #     fig.add_trace(
+            #         go.Scatter(
+            #             x=time[pos_idx],
+            #             y=lif_here[pos_idx] * 0.3 + 0.85,
+            #             name="LIF On",
+            #             mode="markers",
+            #             marker=dict(
+            #                 symbol="line-ns-open",
+            #                 color="orange",
+            #                 size=20,
+            #                 line=dict(width=2),
+            #             ),
+            #         )
+            #     )
+            #     fig.add_trace(
+            #         go.Scatter(
+            #             x=time[neg_idx],
+            #             y=lif_here[neg_idx] * 0.3 + 1.15,
+            #             name="LIF Off",
+            #             mode="markers",
+            #             marker=dict(
+            #                 symbol="line-ns-open",
+            #                 color="orange",
+            #                 size=20,
+            #                 line=dict(width=2),
+            #             ),
+            #         )
+            #     )
+
+            #     dv_here = dv_spk_hist[start:end]
+            #     pos_idx = np.where(dv_here > 0)[0]
+            #     neg_idx = np.where(dv_here < 0)[0]
+            #     fig.add_trace(
+            #         go.Scatter(
+            #             x=time[pos_idx],
+            #             y=dv_here[pos_idx] * 0.3 + 1.85,
+            #             name="DV On",
+            #             mode="markers",
+            #             marker=dict(
+            #                 symbol="line-ns-open",
+            #                 color="cyan",
+            #                 size=20,
+            #                 line=dict(width=2),
+            #             ),
+            #         )
+            #     )
+            #     fig.add_trace(
+            #         go.Scatter(
+            #             x=time[neg_idx],
+            #             y=dv_here[neg_idx] * 0.3 + 2.15,
+            #             name="DV Off",
+            #             mode="markers",
+            #             marker=dict(
+            #                 symbol="line-ns-open",
+            #                 color="cyan",
+            #                 size=20,
+            #                 line=dict(width=2),
+            #             ),
+            #         )
+            #     )
+
+            #     pio.write_html(fig, file=f"./compare_spike_trains/{difficulty}_noise{noise_level}_{i}s.html", auto_open=False)

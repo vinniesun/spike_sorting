@@ -60,38 +60,31 @@ class IntracorticalDataset(Dataset):
 
 class Model(nn.Module):
     def __init__(
-            self, 
-            in_channel: list[int],
-            filters: List[int],
-            kernel_sizes: List[int],
-            strides: List[int],
-            fc_input_dim: int,
-            num_classes: int,
+        self, 
+        input_dim: int,
+        hidden_dim: int,
+        num_classes: int,
     ):
         super().__init__()
 
-        self.convs = nn.ModuleList(
-            [nn.Conv1d(
-                in_channels=in_channel[i],
-                out_channels=filters[i],
-                kernel_size=kernel_sizes[i],
-                stride=strides[i]
-            ) for i in range(len(filters))]
-        )
-        self.relu = nn.ReLU()
+        self.lstm = nn.LSTMCell(input_dim, hidden_dim)
+        # self.relu = nn.ReLU()
         
-        self.fc1 = nn.Linear(fc_input_dim, num_classes)
+        self.fc1 = nn.Linear(hidden_dim, num_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        bs, num_chan, seq_len = x.shape
+        bs, seq_len = x.shape
 
-        for i in range(len(self.convs)):
-            x = self.relu(self.convs[i](x))
+        h_t = torch.zeros(bs, self.lstm.hidden_size, dtype=x.dtype, device=x.device)
+        c_t = torch.zeros(bs, self.lstm.hidden_size, dtype=x.dtype, device=x.device)
 
-        x = x.view(bs, -1)
-        x = self.fc1(x)
+        for t in range(seq_len):
+            x_t = x[:, t].unsqueeze(-1)
+            h_t, c_t = self.lstm(x_t, (h_t, c_t))
 
-        return x
+            out = self.fc1(h_t)
+
+        return out
 
 def train_test_split(spike_classes, all_spk_trains, all_spike_signals, train_test_split_ratio):
     train_spk_train, test_spk_train = [], []
@@ -320,7 +313,7 @@ def train(
             data = data.to(DEVICE)
             label = label.to(DEVICE)
 
-            pred = net(data.unsqueeze(1))
+            pred = net(data)
 
             loss = loss_fn(pred, label)
             curr_loss += loss.item()
@@ -334,7 +327,7 @@ def train(
             data = data.to(DEVICE)
             label = label.to(DEVICE)
 
-            pred = net(data.unsqueeze(1))
+            pred = net(data)
 
             correct, total = acc_fn(pred, label)
             correct_samples += correct
@@ -373,7 +366,7 @@ def test(
             data = data.to(DEVICE)
             label = label.to(DEVICE)
 
-            pred = net(data.unsqueeze(1))
+            pred = net(data)
 
             correct, total = acc_fn(pred, label)
             correct_samples += correct
@@ -523,7 +516,7 @@ if __name__ == "__main__":
     # clean_images(PREDICTION_OUTPUT_PATH)
     TRAINING_PRED_OUTPUT_PATH = "./training_prediction_plots/"
     # clean_images(TRAINING_PRED_OUTPUT_PATH)
-    TRAINING_LOG_PATH = "./1d_conv_training_log"
+    TRAINING_LOG_PATH = "./lstm_training_log"
     if not os.path.exists(TRAINING_LOG_PATH):
         os.makedirs(TRAINING_LOG_PATH)
     
@@ -542,7 +535,7 @@ if __name__ == "__main__":
     with open(TRAINING_LOG_NAME, "a") as f:
         f.write(f"Seed Number: {SEED}\n\n")
 
-    use_dm = "dv"
+    use_dm = "dm"
     use_reconstructed = False
     reconstruct_dm = False
     # for dm, the threshold is: 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8
@@ -640,41 +633,18 @@ if __name__ == "__main__":
 
             # Original Setting
             net = Model(
-                in_channel=[1, 16, 32],
-                filters=[16, 32, 48],
-                kernel_sizes=[5, 5, 5],
-                strides=[1, 1, 1],
-                fc_input_dim=48 * (47 - 12),
+                input_dim=1,
+                hidden_dim=64,
                 num_classes=len(spike_classes),
             )
-
-            # Try smaller model
-            # net = Model(
-            #     in_channel=[1, 16],
-            #     filters=[16, 32],
-            #     kernel_sizes=[5, 5],
-            #     strides=[1, 1],
-            #     fc_input_dim=32 * (window_size - 8),
-            #     num_classes=len(spike_classes),
-            # )
-
-            # Try even smaller model
-            # net = Model(
-            #     in_channel=[1],
-            #     filters=[16],
-            #     kernel_sizes=[5],
-            #     strides=[1],
-            #     fc_input_dim=16 * (window_size - 4),
-            #     num_classes=len(spike_classes),
-            # )
 
             net.to(DEVICE)
             test_net = copy.deepcopy(net)
             loss_fn = nn.CrossEntropyLoss()
             optimiser = torch.optim.AdamW(net.parameters(), lr=2e-3, betas=(0.9, 0.999), weight_decay=0.1)
             # optimiser = torch.optim.RMSprop(net.parameters(), lr=1e-3, alpha=0.99, eps=1e-8)
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=NUM_EPOCHS, eta_min=1e-5)
-            # scheduler = None
+            # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=NUM_EPOCHS, eta_min=1e-5)
+            scheduler = None
             acc_fn = classification_acc_fn
 
             train(net, test_net, train_loader, test_loader, optimiser, loss_fn, acc_fn, scheduler)

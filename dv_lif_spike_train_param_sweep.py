@@ -7,52 +7,16 @@ from utils import (
     load_dataset_intracortical,
     leaky_integrate_neuron,
     reconstruction_lif,
-    calc_rmse
+    calc_rmse,
+    dv_to_lif_spike_gen
 )
-
-def dv_to_lif_spike_gen(
-    signal,
-    lif_threshold,
-    sampling_interval=1/24000,
-    lif_tau=1/24000,
-):
-    length_of_signal = signal.shape[0]
-    # dm specific variable
-    last_reset_voltage = 0
-
-    # lif specific variable
-    u = 0
-    u_rest = 0
-    time_lif = np.linspace(0, length_of_signal, length_of_signal, dtype=np.float32)
-
-    u_hist, spk_hist = [], []
-    for i in range(length_of_signal):
-        u_hist.append(u)
-
-        dv = signal[i] - last_reset_voltage
-
-        u = leaky_integrate_neuron(u, time_step=sampling_interval, I=dv, Urest=u_rest, tau=lif_tau)
-
-        if u >= lif_threshold:
-            u_rest = 0
-            spk_hist.append(float(1))
-        elif u <= -lif_threshold:
-            u_rest = -0
-            spk_hist.append(float(-1))
-        else:
-            u_rest = 0
-            spk_hist.append(float(0))
-
-        last_reset_voltage = signal[i]
-
-    return np.array(u_hist), np.array(spk_hist), time_lif
 
 def compression_ratio(filtered_signal, spike_train):
     idx = np.where(spike_train != 0)[0]
     tdr_fs = filtered_signal.shape[0] * 12
-    tdr_dm = idx.shape[0] * (np.ceil(np.log2(10000)) + 1) if idx.shape[0] > 0 else 1
+    tdr_apm = idx.shape[0] if idx.shape[0] > 0 else 1 # remove (np.ceil(np.log2(10000)) + 1) to be consistent with ASC?
 
-    return tdr_fs / tdr_dm
+    return tdr_fs / tdr_apm
 
 def plot_heatmap(results: list, noise_level: str):
     # Extract unique sorted x and y values
@@ -75,7 +39,7 @@ def plot_heatmap(results: list, noise_level: str):
         cr_grid[i, j] = cr
 
     ################### Plot RMSE heatmap
-    fig, ax = plt.subplots(figsize=(10, 8))
+    fig, ax = plt.subplots(figsize=(10, 10))
 
     im = ax.imshow(
         rmse_grid,
@@ -98,6 +62,11 @@ def plot_heatmap(results: list, noise_level: str):
         labels=y_vals
     )
 
+    ax.set_xticks(np.arange(len(x_vals) + 1)-0.5, minor=True)
+    ax.set_yticks(np.arange(len(y_vals) + 1)-0.5, minor=True)
+    ax.grid(which="minor", color="w", linestyle='-', linewidth=2)
+    ax.tick_params(which="minor", bottom=False, left=False)
+
     for i in range(len(y_vals)):
         for j in range(len(x_vals)):
             value = rmse_grid[i, j]
@@ -106,6 +75,7 @@ def plot_heatmap(results: list, noise_level: str):
                     j,
                     i,
                     f"{value:.3f}",
+                    rotation=45,
                     ha="center",
                     va="center",
                     color="black",
@@ -120,7 +90,7 @@ def plot_heatmap(results: list, noise_level: str):
     plt.close()
 
     ################ Plot CR heatmap
-    fig, ax = plt.subplots(figsize=(10, 8))
+    fig, ax = plt.subplots(figsize=(10, 10))
     
     im = ax.imshow(
         cr_grid,
@@ -143,6 +113,11 @@ def plot_heatmap(results: list, noise_level: str):
         labels=y_vals
     )
     
+    ax.set_xticks(np.arange(len(x_vals) + 1)-0.5, minor=True)
+    ax.set_yticks(np.arange(len(y_vals) + 1)-0.5, minor=True)
+    ax.grid(which="minor", color="w", linestyle='-', linewidth=2)
+    ax.tick_params(which="minor", bottom=False, left=False)
+
     for i in range(len(y_vals)):
         for j in range(len(x_vals)):
             value = cr_grid[i, j]
@@ -150,7 +125,8 @@ def plot_heatmap(results: list, noise_level: str):
                 ax.text(
                     j,
                     i,
-                    f"{value:.3f}",
+                    f"{value:.1f}",
+                    rotation=45,
                     ha="center",
                     va="center",
                     color="black",
@@ -166,13 +142,11 @@ def plot_heatmap(results: list, noise_level: str):
 
 if __name__ == "__main__":
     filepath = "./intracortical_dataset/"
-    
-    dm_threshold = np.array([0.2])
-    lif_threshold = np.array([0.8])
 
     # parameters for sweeping
     lif_thresholds = np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4]) # old threshoolds: 0.5, 0.8, 1.2, 1.5, 1.8, 2.0, 2.5, 3.0
     lif_tau = np.arange(start=1, stop=9, step=1) * 1/24000
+    reset_mechanism = "zero" # "none", "subtract", "zero"
 
     results_005, results_01, results_015, results_02 = [], [], [], [] # each entry is a tuple of (lif_threshold, lif_tau, rmse, cr)
     for lif_threshold in tqdm(lif_thresholds, desc="Sweeping LIF Threshold"):
@@ -192,6 +166,7 @@ if __name__ == "__main__":
                         lif_threshold=lif_threshold,
                         sampling_interval=sampling_interval,
                         lif_tau=lt,
+                        reset_mechanism=reset_mechanism
                     )
 
                     reconstructed_signal = reconstruction_lif(dv_spk_hist, time_step=sampling_interval, reconstruct_tau=10*sampling_interval, alpha=0.8, order=2)
