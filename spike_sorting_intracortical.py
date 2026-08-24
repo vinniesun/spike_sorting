@@ -158,7 +158,7 @@ if __name__ == "__main__":
         Dataset downloaded from: https://figshare.le.ac.uk/articles/dataset/Simulated_dataset/11897595?file=21819066
     """
     BATCH_SIZE = 256 # 128 or 64
-    NUM_EPOCHS= 60 # Need to increase no of epochs?
+    NUM_EPOCHS= 120 # 60 epochs seems to work for lstm + lif model. slstm + lif seems to need more epochs.
 
     TRAINING_LOG_PATH = "./spike_sorting_training_log"
     if not os.path.exists(TRAINING_LOG_PATH):

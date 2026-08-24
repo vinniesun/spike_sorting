@@ -28,7 +28,7 @@ if __name__ == "__main__":
     BATCH_SIZE = 64 # 128 or 64
     NUM_EPOCHS= 20 # 50 is the best so far
 
-    TRAINING_LOG_PATH = "./spike_sorting_training_log"
+    TRAINING_LOG_PATH = "./spike_detection_training_log"
     if not os.path.exists(TRAINING_LOG_PATH):
         os.makedirs(TRAINING_LOG_PATH)
     TRAINING_LOG_NAME = f"{TRAINING_LOG_PATH}/training_log_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.txt"
@@ -47,23 +47,28 @@ if __name__ == "__main__":
         f.write(f"Seed Number: {SEED}\n\n")
 
     filepath = "./intracortical_dataset/"
-    reset_mechanism = "none" # "none", "subtract", "zero"
+    reset_mechanism = "subtract" # "none", "subtract", "zero"
     train_test_split_ratio = 0.8 # 80% training, 20% testing
     label_window_size = 3
-    lif_threshold = 0.3
-    lif_tau = 8 * (1/24000)
+    lif_threshold = 0.4
+    lif_tau = 1 * (1/24000)
+
+    examine_window_size = 12 # 1ms
+    skip_forward_window_size = 12 # 0.5ms
+    spike_detection_threshold = 5 # number of events to be exceeded to be classified as an AP.
 
     for difficulty in ["Difficult1", "Difficult2", "Easy1", "Easy2"]:
         for noise_level in ["005", "01", "015", "02"]:
             filename = f"C_{difficulty}_noise{noise_level}.mat"
 
-            rng = np.random.default_rng(seed=SEED)
+            with open(TRAINING_LOG_NAME, "a") as f:
+                f.write(f"Filename: {filename}\n")
 
             signal, spike_class_label, spike_times, sampling_interval, \
             sampling_rate, spike_pulse_1ms_idx_length, spike_classes, \
             filtered_signal = load_dataset_intracortical(filepath, filename)
 
-            dv_u_hist, dv_spk_hist, dv_time_lif = dv_to_lif_spike_gen(
+            dv_u_hist, spike_train, dv_time_lif = dv_to_lif_spike_gen(
                 signal=filtered_signal,
                 lif_threshold=lif_threshold,
                 sampling_interval=sampling_interval,
@@ -71,32 +76,59 @@ if __name__ == "__main__":
                 reset_mechanism=reset_mechanism
             )
 
-            train_spike_train, train_spike_labels, \
-            test_spike_train, test_spike_labels, \
-            train_spike_times, test_spike_times = train_test_split_spike_detection(
-                spike_train=dv_spk_hist,
-                spike_times=spike_times,
-                split_ratio=train_test_split_ratio,
-                label_window=label_window_size
-            )
-
             ############ Verify spike window and gt spike time and spike signal matches
-            # fig, ax = plt.subplots(4, 1, figsize=(12, 10), sharex=True)
 
-            # ax[0].plot(filtered_signal[train_spike_times[0]-48:train_spike_times[0]+48], color="blue", label=r"V(t)")
-            # ax[0].plot(train_spike_labels[train_spike_times[0]-48:train_spike_times[0]+48], color="red", label=r"\hat{y}(t)")
+            # train_spike_train, train_spike_labels, \
+            # test_spike_train, test_spike_labels, \
+            # train_spike_times, test_spike_times = train_test_split_spike_detection(
+            #     spike_train=spike_train,
+            #     spike_times=spike_times,
+            #     split_ratio=train_test_split_ratio,
+            #     label_window=label_window_size
+            # )
+
+            # fig, ax = plt.subplots(4, 1, figsize=(12, 10), sharex=False)
+            # time = np.arange(filtered_signal[train_spike_times[0]-48:train_spike_times[0]+48].shape[0]) # / 24000
+
+            # # ax[0].plot(time, filtered_signal[train_spike_times[0]-48:train_spike_times[0]+48], color="blue", label=r"V(t)")
+            # # ax[0].plot(time, train_spike_labels[train_spike_times[0]-48:train_spike_times[0]+48], color="red", label=r"GT")
+            # # pos_idx = np.where(train_spike_train[train_spike_times[0]-48:train_spike_times[0]+48] > 0)[0]
+            # # neg_idx = np.where(train_spike_train[train_spike_times[0]-48:train_spike_times[0]+48] < 0)[0]
+            # # ax[0].eventplot(time[pos_idx], color="green", lineoffsets=2.0, linelengths=0.4)
+            # # ax[0].eventplot(time[neg_idx], color='black', lineoffsets=2.0, linelengths=0.4)
+            # # ax[0].legend(loc="lower left")
+            # special_time = np.arange(filtered_signal[23290:23330].shape[0])
+            # ax[0].plot(special_time, filtered_signal[23290:23330], color="blue", label=r"V(t)")
+            # ax[0].plot(special_time, train_spike_labels[23290:23330], color="red", label=r"GT")
+            # ax[0].plot(special_time, dv_u_hist[23290:23330], color="orange", label=r"u(t)")
+            # pos_idx = np.where(spike_train[23290:23330] > 0)[0]
+            # neg_idx = np.where(spike_train[23290:23330] < 0)[0]
+            # ax[0].eventplot(special_time[pos_idx], color="green", lineoffsets=2.0, linelengths=0.4)
+            # ax[0].eventplot(special_time[neg_idx], color='black', lineoffsets=2.0, linelengths=0.4)
             # ax[0].legend(loc="lower left")
 
-            # ax[1].plot(filtered_signal[train_spike_times[3]-48:train_spike_times[3]+48], color="blue", label=r"V(t)")
-            # ax[1].plot(train_spike_labels[train_spike_times[3]-48:train_spike_times[3]+48], color="red", label=r"\hat{y}(t)")
+            # ax[1].plot(time, filtered_signal[train_spike_times[3]-48:train_spike_times[3]+48], color="blue", label=r"V(t)")
+            # ax[1].plot(time, train_spike_labels[train_spike_times[3]-48:train_spike_times[3]+48], color="red", label=r"\hat{y}(t)")
+            # pos_idx = np.where(train_spike_train[train_spike_times[3]-48:train_spike_times[3]+48] > 0)[0]
+            # neg_idx = np.where(train_spike_train[train_spike_times[3]-48:train_spike_times[3]+48] < 0)[0]
+            # ax[1].eventplot(time[pos_idx], color="green", lineoffsets=2.0, linelengths=0.4)
+            # ax[1].eventplot(time[neg_idx], color='black', lineoffsets=2.0, linelengths=0.4)
             # ax[1].legend(loc="lower left")
 
-            # ax[2].plot(filtered_signal[train_spike_times[8]-48:train_spike_times[8]+48], color="blue", label=r"V(t)")
-            # ax[2].plot(train_spike_labels[train_spike_times[8]-48:train_spike_times[8]+48], color="red", label=r"\hat{y}(t)")
+            # ax[2].plot(time, filtered_signal[train_spike_times[8]-48:train_spike_times[8]+48], color="blue", label=r"V(t)")
+            # ax[2].plot(time, train_spike_labels[train_spike_times[8]-48:train_spike_times[8]+48], color="red", label=r"\hat{y}(t)")
+            # pos_idx = np.where(train_spike_train[train_spike_times[8]-48:train_spike_times[8]+48] > 0)[0]
+            # neg_idx = np.where(train_spike_train[train_spike_times[8]-48:train_spike_times[8]+48] < 0)[0]
+            # ax[2].eventplot(time[pos_idx], color="green", lineoffsets=2.0, linelengths=0.4)
+            # ax[2].eventplot(time[neg_idx], color='black', lineoffsets=2.0, linelengths=0.4)
             # ax[2].legend(loc="lower left")
 
-            # ax[3].plot(filtered_signal[train_spike_times[23]-48:train_spike_times[23]+48], color="blue", label=r"V(t)")
-            # ax[3].plot(train_spike_labels[train_spike_times[23]-48:train_spike_times[23]+48], color="red", label=r"\hat{y}(t)")
+            # ax[3].plot(time, filtered_signal[train_spike_times[23]-48:train_spike_times[23]+48], color="blue", label=r"V(t)")
+            # ax[3].plot(time, train_spike_labels[train_spike_times[23]-48:train_spike_times[23]+48], color="red", label=r"\hat{y}(t)")
+            # pos_idx = np.where(train_spike_train[train_spike_times[23]-48:train_spike_times[23]+48] > 0)[0]
+            # neg_idx = np.where(train_spike_train[train_spike_times[23]-48:train_spike_times[23]+48] < 0)[0]
+            # ax[3].eventplot(time[pos_idx], color="green", lineoffsets=2.0, linelengths=0.4)
+            # ax[3].eventplot(time[neg_idx], color='black', lineoffsets=2.0, linelengths=0.4)
             # ax[3].legend(loc="lower left")
 
             # plt.tight_layout()
@@ -104,69 +136,46 @@ if __name__ == "__main__":
             # plt.close()
             ############ End of verification
 
-            train_samples, train_labels = create_training_dataset_spike_detection(
-                spike_train=train_spike_train,
-                spike_labels=train_spike_labels,
-                spike_times=train_spike_times
-            ) # list of torch tensors
+            tp, fp, fn = 0, 0, 0
+            i, k = examine_window_size, 0
+            while i <= spike_train.shape[0] and k < spike_times.shape[0]:
+                # if difficulty == "Difficult1" and noise_level == "005":
+                #     output = f"idx: {i:,} k: {k}, spike time: {spike_times[k]:,}, density of spikes in window: {np.count_nonzero(spike_train[i-examine_window_size:i])}, "
+                current_true_label_window_start, current_true_label_window_end = spike_times[k] - label_window_size, spike_times[k] + (3*label_window_size)
 
-            train_samples = torch.stack(train_samples, dim=0) # shape (num_samples, seq_len)
-            train_labels = torch.stack(train_labels, dim=0) # shape (num_samples, seq_len)
-            train_dataset = IntracorticalDataset(train_samples, train_labels)
-            train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=False)
+                count = np.count_nonzero(spike_train[i-examine_window_size:i])
+                ap_detected =  (count > spike_detection_threshold)
 
-            net = SpikeDetector(
-                input_dim=1,
-                hidden_size=32,
-                output_dim=2
-            )
-            net.to(DEVICE)
+                within_window = current_true_label_window_start <= i <= current_true_label_window_end
 
-            optimiser = torch.optim.AdamW(net.parameters(), lr=0.001, weight_decay=0.01)
-            loss_fn = torch.nn.CrossEntropyLoss()
+                if i > current_true_label_window_end:
+                    k += 1
+                elif ap_detected and within_window: # ap is detected and is within the true label window
+                    tp += 1
+                    k += 1
+                    i += skip_forward_window_size # skip forward by 0.5ms to avoid multi-counting the same AP
+                elif ap_detected and not within_window: # ap is detected but is outside the true label window
+                    fp += 1
+                    i += 1
+                elif ((i == current_true_label_window_end) and not ap_detected): # ap is not detected and we are at the end of the true label window
+                    fn += 1
+                    k += 1
+                    i += 1
+                else: # everywhere else
+                    i += 1
+                # print(f"Idx: {i:,}", end="\033[K\r") 
+                # if difficulty == "Difficult1" and noise_level == "005":
+                #     with open(TRAINING_LOG_NAME, "a") as f:
+                #         output += f"ap_detected: {ap_detected}, tp: {tp}, fp: {fp}, fn: {fn}, current window start: {current_true_label_window_start:,}, current window end: {current_true_label_window_end:,}\n"
+                #         f.write(output)
 
-            best_loss = float("inf")
-            loss_hist = []
-            for epoch in tqdm(range(NUM_EPOCHS)):
-                net.train()
-                local_loss = 0.0
-                for data, target in train_loader:
-                    data = data.unsqueeze(-1).to(DEVICE) # shape (batch_size, seq_len, 1)
-                    target = target.to(DEVICE) # shape (batch_size, seq_len)
+                # if i == 661:
+                #     print(ap_detected, np.count_nonzero(spike_train[i-examine_window_size:i]), spike_detection_threshold, \
+                #           repr(spike_detection_threshold), repr(np.count_nonzero(spike_train[i-examine_window_size:i])))
 
-                    spk_hist, mem_hist = net(data) # (seq_len, 1, 2)
+            accuracy = tp / (tp + fp + fn) if (tp + fp + fn) > 0 else 0
+            with open(TRAINING_LOG_NAME, "a") as f:
+                f.write(f"Number of APs in label: {spike_times.shape[0]}\n")
+                f.write(f"Accuracy: {accuracy:.4f}. TP: {tp}, FP: {fp}, FN: {fn}\n")
 
-                    spk_hist = spk_hist.permute(1, 2, 0)
-                    loss_val = loss_fn(spk_hist, target)
-
-                    optimiser.zero_grad()
-                    loss_val.backward()
-                    optimiser.step()
-
-                    local_loss += loss_val.item()
-
-                if local_loss < best_loss:
-                    best_loss = local_loss
-                    torch.save(net.state_dict(), f"./spike_detection_weights/best_model_{difficulty}_noise{noise_level}.pth")
-                loss_hist.append(local_loss)
-
-            fig, ax = plt.subplots(1, 1, figsize=(8, 6))
-            ax.plot(loss_hist, color="blue", label="Training Loss")
-            plt.tight_layout()
-            plt.savefig(f"./loss_{difficulty}_noise{noise_level}.jpg", dpi=300)
-            plt.close()
-
-            net.load_state_dict(torch.load(f"./spike_detection_weights/best_model_{difficulty}_noise{noise_level}.pth", weights_only=True))
-            net.eval()
-
-            with torch.no_grad():
-                test_data = torch.tensor(test_spike_train, dtype=torch.float32).unsqueeze(0).unsqueeze(-1).to(DEVICE) # shape (1, seq_len, 1)
-                test_target = torch.tensor(test_spike_labels, dtype=torch.long).unsqueeze(0).to(DEVICE) # shape (1, seq_len)
-
-                spk_hist, mem_hist = net(test_data)
-
-            class_index = torch.argmax(spk_hist, dim=2) # shape (seq_len, batch_size)
-            print(f"final output shape: {class_index.shape}")
-
-            # calc accuracy
-
+            

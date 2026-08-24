@@ -255,7 +255,7 @@ def train_test_split_spike_detection(
     spike_labels = np.zeros_like(spike_train) # shape (seq_len)
 
     for spike_time in spike_times:
-        spike_labels[spike_time - label_window: spike_time + (2*label_window) + 1] = 1
+        spike_labels[spike_time - label_window: spike_time + (3*label_window)] = 1
 
     train_spike_train = spike_train[:spike_times[split_num] + 24]
     train_spike_labels = spike_labels[:spike_times[split_num] + 24]
