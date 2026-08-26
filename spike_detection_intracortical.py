@@ -25,9 +25,6 @@ if __name__ == "__main__":
     """
         Dataset downloaded from: https://figshare.le.ac.uk/articles/dataset/Simulated_dataset/11897595?file=21819066
     """
-    BATCH_SIZE = 64 # 128 or 64
-    NUM_EPOCHS= 20 # 50 is the best so far
-
     TRAINING_LOG_PATH = "./spike_detection_training_log"
     if not os.path.exists(TRAINING_LOG_PATH):
         os.makedirs(TRAINING_LOG_PATH)
@@ -42,27 +39,29 @@ if __name__ == "__main__":
         torch.cuda.manual_seed(SEED)
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
-    
-    with open(TRAINING_LOG_NAME, "a") as f:
-        f.write(f"Seed Number: {SEED}\n\n")
 
     filepath = "./intracortical_dataset/"
     reset_mechanism = "subtract" # "none", "subtract", "zero"
-    train_test_split_ratio = 0.8 # 80% training, 20% testing
+
     label_window_size = 3
     lif_threshold = 0.4
     lif_tau = 1 * (1/24000)
 
-    examine_window_size = 12 # 1ms
+    examine_window_size = 8 # 1ms
     skip_forward_window_size = 12 # 0.5ms
-    spike_detection_threshold = 5 # number of events to be exceeded to be classified as an AP.
+    spike_detection_threshold = 4 # number of events to be exceeded to be classified as an AP.
+
+    with open(TRAINING_LOG_NAME, "a") as f:
+        f.write(f"Seed Number: {SEED}\nevent density threshold: {spike_detection_threshold}\nexamin_window_size: {examine_window_size}\n")
+        f.write(f"skip_forward_window_size: {skip_forward_window_size}\nlabel_window_size: {label_window_size}\n")
+        f.write(f"lif_threshold: {lif_threshold}\nlif_tau: {lif_tau}\nreset_mechanism: {reset_mechanism}\n")
 
     for difficulty in ["Difficult1", "Difficult2", "Easy1", "Easy2"]:
         for noise_level in ["005", "01", "015", "02"]:
             filename = f"C_{difficulty}_noise{noise_level}.mat"
 
             with open(TRAINING_LOG_NAME, "a") as f:
-                f.write(f"Filename: {filename}\n")
+                f.write(f"Filename: {filename}.\n")
 
             signal, spike_class_label, spike_times, sampling_interval, \
             sampling_rate, spike_pulse_1ms_idx_length, spike_classes, \

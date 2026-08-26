@@ -186,14 +186,15 @@ if __name__ == "__main__":
     encoder_threshold = 0.2
     lif_tau = 1 * (1/24000)
 
+    MODEL_FILENAME = f"./intracortical_weights/spike_sorting_best_model.pth"
+
+    complete_train_data, complete_train_labels, complete_test_data, complete_test_labels = [], [], dict(), dict()
     for difficulty in ["Difficult1", "Difficult2", "Easy1", "Easy2"]:
         for noise_level in ["005", "01", "015", "02"]:
             filename = f"C_{difficulty}_noise{noise_level}.mat"
-
-            MODEL_FILENAME = f"./intracortical_weights/{filename[:-4]}_spike_sorting_best_model.pth"
             
             with open(TRAINING_LOG_NAME, "a") as f:
-                f.write(f"Current Setting: filename: {filename}\n\n")
+                f.write(f"Currently Loading: filename: {filename}\n\n")
 
             signal, spike_class_label, spike_times, sampling_interval, \
             sampling_rate, spike_pulse_1ms_idx_length, spike_classes, \
@@ -222,15 +223,6 @@ if __name__ == "__main__":
                 all_spike_signals[spike_class_label[i]].append(filtered_signal[spike_times[i] - 23:spike_times[i] + 24])
                 all_spk_trains[spike_class_label[i]].append(spike_train[spike_times[i] - 23:spike_times[i] + 24])
 
-                # if i == 100:
-                #     fig, ax = plt.subplots(2, 1, figsize=(10, 6))
-                #     ax[0].plot(filtered_signal[spike_times[i] - 23:spike_times[i] + 24])
-                #     ax[1].stem(spike_train[spike_times[i] - 23:spike_times[i] + 24])
-
-                #     plt.tight_layout()
-                #     plt.savefig(f"verify_spike_det_labeling/spike_{i}_label_{spike_class_label[i]}_signal_and_spike_train.jpg", dpi=300)
-                #     plt.close()
-
             train_spk_train, test_spk_train, \
             train_signal, test_signal, \
             train_label, test_label = train_test_split_spike_sorting(
@@ -240,30 +232,44 @@ if __name__ == "__main__":
                 train_test_split_ratio
             )
 
-            ######## Setup Training & Test Tensors ########
             training_spikes_tensor = torch.tensor(np.array(train_spk_train), dtype=torch.float32) # train_spk_train or filtered_spk_trains
             training_labels_tensor = torch.tensor(train_label, dtype=torch.long) - 1   # Offset by 1 to start from 0
             
             test_spikes_tensor = torch.tensor(np.array(test_spk_train), dtype=torch.float32)    # test_spk_train or filtered_spk_trains_test
             test_labels_tensor = torch.tensor(test_label, dtype=torch.long) - 1         # Offset by 1 to start from 0
 
-            train_dataset = IntracorticalDataset(training_spikes_tensor, training_labels_tensor)
-            test_dataset = IntracorticalDataset(test_spikes_tensor, test_labels_tensor)
-            
-            train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=False)
+            complete_train_data.append(training_spikes_tensor)
+            complete_train_labels.append(training_labels_tensor)
+            complete_test_data[filename[:-4]] = test_spikes_tensor
+            complete_test_labels[filename[:-4]] = test_labels_tensor
+
+    complete_train_data = torch.cat(complete_train_data, dim=0)
+    complete_train_labels = torch.cat(complete_train_labels, dim=0)
+
+    train_dataset = IntracorticalDataset(complete_train_data, complete_train_labels)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=False)
+
+    net = SpikingLSTMSpikeSorter(
+        input_dim=1,
+        hidden_size=128,
+        num_classes=len(spike_classes),
+    )
+    net.to(DEVICE)
+    test_net = copy.deepcopy(net)
+    
+    optimiser = torch.optim.AdamW(net.parameters(), lr=2e-3, betas=(0.9, 0.999), weight_decay=0.1)
+    loss_fn = SF.ce_count_loss()
+    scheduler = None
+
+    train(net, train_loader, optimiser, loss_fn, acc_mode="count", scheduler=scheduler) # acc_mode="temporal" or "count"
+
+    for difficulty in ["Difficult1", "Difficult2", "Easy1", "Easy2"]:
+        for noise_level in ["005", "01", "015", "02"]:
+            filename = f"C_{difficulty}_noise{noise_level}.mat"
+    
+            test_dataset = IntracorticalDataset(complete_test_data[filename[:-4]], complete_test_labels[filename[:-4]])
             test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=False)
 
-            net = SpikingLSTMSpikeSorter(
-                input_dim=1,
-                hidden_size=128,
-                num_classes=len(spike_classes),
-            )
-            net.to(DEVICE)
-            test_net = copy.deepcopy(net)
-
-            optimiser = torch.optim.AdamW(net.parameters(), lr=2e-3, betas=(0.9, 0.999), weight_decay=0.1)
-            loss_fn = SF.ce_count_loss()
-            scheduler = None
-
-            train(net, train_loader, optimiser, loss_fn, acc_mode="count", scheduler=scheduler) # acc_mode="temporal" or "count"
+            with open(TRAINING_LOG_NAME, "a") as f:
+                f.write(f"Currently Testing: {filename}\n\n")
             test(test_net, test_loader, acc_mode="count", final_test=True, visualise=True)

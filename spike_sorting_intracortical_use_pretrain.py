@@ -158,7 +158,7 @@ if __name__ == "__main__":
         Dataset downloaded from: https://figshare.le.ac.uk/articles/dataset/Simulated_dataset/11897595?file=21819066
     """
     BATCH_SIZE = 256 # 128 or 64
-    NUM_EPOCHS= 120 # 60 epochs seems to work for lstm + lif model. slstm + lif seems to need more epochs.
+    NUM_EPOCHS= 10 # 60 epochs seems to work for lstm + lif model. slstm + lif seems to need more epochs.
 
     TRAINING_LOG_PATH = "./spike_sorting_training_log"
     if not os.path.exists(TRAINING_LOG_PATH):
@@ -186,14 +186,16 @@ if __name__ == "__main__":
     encoder_threshold = 0.2
     lif_tau = 1 * (1/24000)
 
+    PRETRAIN_MODEL_FILENAME = f"./intracortical_weights/spike_sorting_best_model.pth"
+
     for difficulty in ["Difficult1", "Difficult2", "Easy1", "Easy2"]:
         for noise_level in ["005", "01", "015", "02"]:
             filename = f"C_{difficulty}_noise{noise_level}.mat"
 
             MODEL_FILENAME = f"./intracortical_weights/{filename[:-4]}_spike_sorting_best_model.pth"
-            
+
             with open(TRAINING_LOG_NAME, "a") as f:
-                f.write(f"Current Setting: filename: {filename}\n\n")
+                f.write(f"Filename: {filename}.\n")
 
             signal, spike_class_label, spike_times, sampling_interval, \
             sampling_rate, spike_pulse_1ms_idx_length, spike_classes, \
@@ -221,16 +223,7 @@ if __name__ == "__main__":
             for i in range(len(spike_times)):
                 all_spike_signals[spike_class_label[i]].append(filtered_signal[spike_times[i] - 23:spike_times[i] + 24])
                 all_spk_trains[spike_class_label[i]].append(spike_train[spike_times[i] - 23:spike_times[i] + 24])
-
-                # if i == 100:
-                #     fig, ax = plt.subplots(2, 1, figsize=(10, 6))
-                #     ax[0].plot(filtered_signal[spike_times[i] - 23:spike_times[i] + 24])
-                #     ax[1].stem(spike_train[spike_times[i] - 23:spike_times[i] + 24])
-
-                #     plt.tight_layout()
-                #     plt.savefig(f"verify_spike_det_labeling/spike_{i}_label_{spike_class_label[i]}_signal_and_spike_train.jpg", dpi=300)
-                #     plt.close()
-
+            
             train_spk_train, test_spk_train, \
             train_signal, test_signal, \
             train_label, test_label = train_test_split_spike_sorting(
@@ -240,7 +233,6 @@ if __name__ == "__main__":
                 train_test_split_ratio
             )
 
-            ######## Setup Training & Test Tensors ########
             training_spikes_tensor = torch.tensor(np.array(train_spk_train), dtype=torch.float32) # train_spk_train or filtered_spk_trains
             training_labels_tensor = torch.tensor(train_label, dtype=torch.long) - 1   # Offset by 1 to start from 0
             
@@ -258,12 +250,14 @@ if __name__ == "__main__":
                 hidden_size=128,
                 num_classes=len(spike_classes),
             )
+            net.load_state_dict(torch.load(PRETRAIN_MODEL_FILENAME, weights_only=True))
+            
             net.to(DEVICE)
             test_net = copy.deepcopy(net)
-
+            
             optimiser = torch.optim.AdamW(net.parameters(), lr=2e-3, betas=(0.9, 0.999), weight_decay=0.1)
             loss_fn = SF.ce_count_loss()
             scheduler = None
-
+            
             train(net, train_loader, optimiser, loss_fn, acc_mode="count", scheduler=scheduler) # acc_mode="temporal" or "count"
             test(test_net, test_loader, acc_mode="count", final_test=True, visualise=True)

@@ -62,20 +62,20 @@ class SpikingLSTMSpikeSorter(nn.Module):
         self.hidden_size = hidden_size
         self.num_classes = num_classes
 
-        self.slstm = snn.SLSTM(
-            input_size=input_dim + hidden_size, # recurrence dim: input_dim + hidden_size. non-recurrent dim: input_dim
-            hidden_size=hidden_size,
-            bias=False, # Don't include bias cause we dont want membrane potential to change when input = 0
-            threshold=0.5, # starting at 1.0 seems to high.
-            spike_grad=atan(), # try step_double_gaussian() next
-            learn_threshold=True,
-            reset_mechanism="none"
-        )
-        # self.lstm = nn.LSTMCell(
+        # self.slstm = snn.SLSTM(
         #     input_size=input_dim + hidden_size, # recurrence dim: input_dim + hidden_size. non-recurrent dim: input_dim
         #     hidden_size=hidden_size,
-        #     bias=True
+        #     bias=True, # Don't include bias cause we dont want membrane potential to change when input = 0
+        #     threshold=0.5, # starting at 1.0 seems to high.
+        #     spike_grad=atan(), # step_double_gaussian()/atan()
+        #     learn_threshold=True,
+        #     reset_mechanism="none"
         # )
+        self.lstm = nn.LSTMCell(
+            input_size=input_dim + hidden_size, # recurrence dim: input_dim + hidden_size. non-recurrent dim: input_dim
+            hidden_size=hidden_size,
+            bias=True
+        )
 
         self.fc1 = nn.Linear(hidden_size, num_classes)
         self.lif1 = snn.Leaky(
@@ -92,23 +92,27 @@ class SpikingLSTMSpikeSorter(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         batch_size, seq_len = x.shape
 
-        slstm_syn, slstm_mem = self.slstm.init_slstm()
+        # slstm_syn, slstm_mem = self.slstm.init_slstm()
+        # spk1 = torch.zeros(batch_size, self.hidden_size, device=x.device)
+
+        h_t = torch.zeros(batch_size, self.hidden_size, device=x.device)
+        c_t = torch.zeros_like(h_t)
+
         mem2 = self.lif1.reset_mem()
-
-        # h_t = torch.zeros(batch_size, self.hidden_size, device=x.device)
-        # c_t = torch.zeros_like(h_t)
-        spk1 = torch.zeros(batch_size, self.hidden_size, device=x.device)
-
+        
         spk2_hist = []
         for i in range(seq_len):
             # spk1, slstm_syn, slstm_mem = self.slstm(x[:, i].unsqueeze(-1), slstm_syn, slstm_mem)
-            # current_input = torch.cat((x[:, i].unsqueeze(-1), h_t), dim=1) # concatenate input and previous hidden state
-            # h_t, c_t = self.lstm(current_input, (h_t, c_t))
-            current_input = torch.cat((x[:, i].unsqueeze(-1), spk1), dim=1) # concatenate input and previous hidden state
-            spk1, slstm_syn, slstm_mem = self.slstm(current_input, slstm_syn, slstm_mem)
 
-            curr = self.fc1(spk1)
-            # curr = self.fc1(h_t)
+            current_input = torch.cat((x[:, i].unsqueeze(-1), h_t), dim=1) # concatenate input and previous hidden state
+            h_t, c_t = self.lstm(current_input, (h_t, c_t))
+
+            # current_input = torch.cat((x[:, i].unsqueeze(-1), spk1), dim=1) # concatenate input and previous hidden state
+            # spk1, slstm_syn, slstm_mem = self.slstm(current_input, slstm_syn, slstm_mem)
+
+            curr = self.fc1(h_t)
+            # curr = self.fc1(spk1)
+
             spk2, mem2 = self.lif1(curr, mem2)
 
             spk2_hist.append(spk2)
