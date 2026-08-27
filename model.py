@@ -44,8 +44,57 @@ class LSTMCell(nn.Module):
         g_t = torch.tanh(gate_g)
         o_t = torch.sigmoid(gate_o)
 
-        h_t = o_t * torch.tanh(c_t)
         c_t = f_t * c_t + i_t * g_t
+        h_t = o_t * torch.tanh(c_t)
+
+        return h_t, c_t
+
+"""
+    Based on the paper: Long Short-Term Memory Spiking Networks and Their Applications
+    (https://arxiv.org/pdf/2007.04779)
+"""
+class SpikingLSTMCell(nn.Module):
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int,
+        surrogate_fn1=atan(),
+        surrogate_fn2=None,
+        bias: bool=True,
+    ):
+        super().__init__()
+
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.bias = bias
+
+        self.surrogate_fn1 = surrogate_fn1
+        if surrogate_fn2 is None:
+            self.surrogate_fn2 = surrogate_fn1
+        else:
+            self.surrogate_fn2 = surrogate_fn2
+
+        self.w_i = nn.Linear(input_dim, hidden_dim*4, bias=bias)
+        self.w_h = nn.Linear(hidden_dim, hidden_dim*4, bias=bias)
+
+    def init_hidden(self, batch_size: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        h_t = torch.zeros(batch_size, self.hidden_dim, device=self.w_i.weight.device)
+        c_t = torch.zeros(batch_size, self.hidden_dim, device=self.w_i.weight.device)
+
+        return h_t, c_t
+
+    def forward(self, x: torch.Tensor, h_t: torch.Tensor, c_t: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        gates = self.w_i(x) + self.w_h(h_t)
+
+        gate_i, gate_f, gate_g, gate_o = gates.chunk(4, dim=1)
+
+        i_t = self.surrogate_fn1(gate_i)
+        f_t = self.surrogate_fn1(gate_f)
+        g_t = self.surrogate_fn2(gate_g)
+        o_t = self.surrogate_fn1(gate_o)
+
+        c_t = f_t * c_t + i_t * g_t
+        h_t = o_t * c_t
 
         return h_t, c_t
 
@@ -69,13 +118,16 @@ class SpikingLSTMSpikeSorter(nn.Module):
         #     threshold=0.5, # starting at 1.0 seems to high.
         #     spike_grad=atan(), # step_double_gaussian()/atan()
         #     learn_threshold=True,
-        #     reset_mechanism="none"
+        #     reset_mechanism="subtract"
         # )
         self.lstm = nn.LSTMCell(
-            input_size=input_dim + hidden_size, # recurrence dim: input_dim + hidden_size. non-recurrent dim: input_dim
+            input_size=input_dim, # recurrence dim: input_dim + hidden_size. non-recurrent dim: input_dim
             hidden_size=hidden_size,
             bias=True
         )
+
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(p=0.3)
 
         self.fc1 = nn.Linear(hidden_size, num_classes)
         self.lif1 = snn.Leaky(
@@ -84,7 +136,7 @@ class SpikingLSTMSpikeSorter(nn.Module):
             beta=0.9,
             threshold=0.2,
             reset_mechanism="subtract",
-            spike_grad=step_double_gaussian(),
+            spike_grad=atan(), # step_double_gaussian()/atan()
             learn_beta=True,
             learn_threshold=True,
         )
@@ -104,13 +156,14 @@ class SpikingLSTMSpikeSorter(nn.Module):
         for i in range(seq_len):
             # spk1, slstm_syn, slstm_mem = self.slstm(x[:, i].unsqueeze(-1), slstm_syn, slstm_mem)
 
-            current_input = torch.cat((x[:, i].unsqueeze(-1), h_t), dim=1) # concatenate input and previous hidden state
+            # current_input = torch.cat((x[:, i].unsqueeze(-1), h_t), dim=1) # concatenate input and previous hidden state
+            current_input = x[:, i].unsqueeze(-1) # only use the input, not the previous hidden state
             h_t, c_t = self.lstm(current_input, (h_t, c_t))
 
             # current_input = torch.cat((x[:, i].unsqueeze(-1), spk1), dim=1) # concatenate input and previous hidden state
             # spk1, slstm_syn, slstm_mem = self.slstm(current_input, slstm_syn, slstm_mem)
 
-            curr = self.fc1(h_t)
+            curr = self.fc1(self.dropout(self.relu(h_t)))
             # curr = self.fc1(spk1)
 
             spk2, mem2 = self.lif1(curr, mem2)
