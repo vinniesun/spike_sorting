@@ -29,6 +29,7 @@ if __name__ == "__main__":
     if not os.path.exists(TRAINING_LOG_PATH):
         os.makedirs(TRAINING_LOG_PATH)
     TRAINING_LOG_NAME = f"{TRAINING_LOG_PATH}/training_log_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.txt"
+    DETECTION_IDX = f"Intracortical_Spike_Detection_IDX.txt"
 
     SEED = 5673 # 1337, 5673, 1234
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -62,6 +63,9 @@ if __name__ == "__main__":
 
             with open(TRAINING_LOG_NAME, "a") as f:
                 f.write(f"Filename: {filename}.\n")
+
+            with open(DETECTION_IDX, "a") as f:
+                f.write(f"Filename: {filename}\n")
 
             signal, spike_class_label, spike_times, sampling_interval, \
             sampling_rate, spike_pulse_1ms_idx_length, spike_classes, \
@@ -150,6 +154,8 @@ if __name__ == "__main__":
                 if i > current_true_label_window_end:
                     k += 1
                 elif ap_detected and within_window: # ap is detected and is within the true label window
+                    with open(DETECTION_IDX, "a") as f:
+                        f.write(f"Detection idx: {i}, Spike time idx: {k}\n")
                     tp += 1
                     k += 1
                     i += skip_forward_window_size # skip forward by 0.5ms to avoid multi-counting the same AP

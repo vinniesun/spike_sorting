@@ -5,11 +5,71 @@ from snntorch.surrogate import atan
 
 from typing import Tuple, Union, List, Optional
 
-from BRF.grad_functions import StepDoubleGaussianGrad
+# from BRF.grad_functions import StepDoubleGaussianGrad
+
+@torch.jit.script
+def step(x: torch.Tensor) -> torch.Tensor:
+    #
+    # x.gt(0.0).float()
+    # is slightly faster (but less readable) than
+    # torch.where(x > 0.0, 1.0, 0.0)
+    #
+    return x.gt(0.0).float()
+
+@torch.jit.script
+def gaussian(x: torch.Tensor, mu: float = 0.0, sigma: float = 1.0) -> torch.Tensor:
+    return (1 / (sigma * torch.sqrt(2 * torch.tensor(torch.pi)))) * torch.exp(
+        -((x - mu) ** 2) / (2.0 * (sigma ** 2))
+    )
+
+class StepDoubleGaussianGrad(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, x: torch.Tensor) -> torch.Tensor:
+        ctx.save_for_backward(x)
+        return step(x)
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor) -> torch.Tensor:
+        x, = ctx.saved_tensors
+
+        p = 0.15
+        scale = 6.
+        len = 0.5
+
+        sigma1 = len
+        sigma2 = scale * len
+
+        gamma = 0.5
+        dfd = (1. + p) * gaussian(x, mu=0., sigma=sigma1) - 2. * p * gaussian(x, mu=0., sigma=sigma2)
+
+        return grad_output * dfd * gamma
 
 def step_double_gaussian():
     def inner(x):
         return StepDoubleGaussianGrad.apply(x)
+    return inner
+
+class SigmoidGrad(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x: torch.Tensor, alpha: float):
+        ctx.save_for_backward(x)
+        ctx.alpha = alpha
+        return x.gt(0.0).float()
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        x, = ctx.saved_tensors
+        alpha = ctx.alpha
+
+        sig = torch.sigmoid(alpha * x)
+        dfd = alpha * sig * (1 - sig)
+
+        return grad_output * dfd, None
+
+def sigmoid_grad(alpha=1.0):
+    def inner(x):
+        return SigmoidGrad.apply(x, alpha)
     return inner
 
 class LSTMCell(nn.Module):
@@ -52,14 +112,20 @@ class LSTMCell(nn.Module):
 """
     Based on the paper: Long Short-Term Memory Spiking Networks and Their Applications
     (https://arxiv.org/pdf/2007.04779)
+
+    TO-DO: plot atan and step_double_gaussian and compare against sigmoid and tanh to see
+    if the surrogate gradients' derivates are similar enough to the original functions.
 """
 class SpikingLSTMCell(nn.Module):
     def __init__(
         self,
         input_dim: int,
         hidden_dim: int,
-        surrogate_fn1=atan(),
-        surrogate_fn2=None,
+        surrogate_fn1=sigmoid_grad(),
+        surrogate_fn2=atan(0.8),
+        threshold1=1.0,
+        threshold2=1.0,
+        learn_threshold=False,
         bias: bool=True,
     ):
         super().__init__()
@@ -73,6 +139,13 @@ class SpikingLSTMCell(nn.Module):
             self.surrogate_fn2 = surrogate_fn1
         else:
             self.surrogate_fn2 = surrogate_fn2
+
+        if learn_threshold:
+            self.threshold1 = nn.Parameter(torch.tensor(threshold1))
+            self.threshold2 = nn.Parameter(torch.tensor(threshold2))
+        else:
+            self.register_buffer("threshold1", torch.tensor(threshold1))
+            self.register_buffer("threshold2", torch.tensor(threshold2))
 
         self.w_i = nn.Linear(input_dim, hidden_dim*4, bias=bias)
         self.w_h = nn.Linear(hidden_dim, hidden_dim*4, bias=bias)
@@ -88,10 +161,10 @@ class SpikingLSTMCell(nn.Module):
 
         gate_i, gate_f, gate_g, gate_o = gates.chunk(4, dim=1)
 
-        i_t = self.surrogate_fn1(gate_i)
-        f_t = self.surrogate_fn1(gate_f)
-        g_t = self.surrogate_fn2(gate_g)
-        o_t = self.surrogate_fn1(gate_o)
+        i_t = self.surrogate_fn1(gate_i - self.threshold1)
+        f_t = self.surrogate_fn1(gate_f - self.threshold1)
+        g_t = self.surrogate_fn2(gate_g - self.threshold2)
+        o_t = self.surrogate_fn1(gate_o - self.threshold1)
 
         c_t = f_t * c_t + i_t * g_t
         h_t = o_t * c_t
@@ -120,9 +193,21 @@ class SpikingLSTMSpikeSorter(nn.Module):
         #     learn_threshold=True,
         #     reset_mechanism="subtract"
         # )
-        self.lstm = nn.LSTMCell(
-            input_size=input_dim, # recurrence dim: input_dim + hidden_size. non-recurrent dim: input_dim
-            hidden_size=hidden_size,
+
+        # self.lstm = nn.LSTMCell(
+        #     input_size=input_dim, # recurrence dim: input_dim + hidden_size. non-recurrent dim: input_dim
+        #     hidden_size=hidden_size,
+        #     bias=True
+        # )
+
+        self.lstm = SpikingLSTMCell(
+            input_dim=input_dim,
+            hidden_dim=hidden_size,
+            surrogate_fn1=atan(0.8),
+            surrogate_fn2=atan(0.8),
+            threshold1=0.5,
+            threshold2=0.5,
+            learn_threshold=True,
             bias=True
         )
 
@@ -147,8 +232,10 @@ class SpikingLSTMSpikeSorter(nn.Module):
         # slstm_syn, slstm_mem = self.slstm.init_slstm()
         # spk1 = torch.zeros(batch_size, self.hidden_size, device=x.device)
 
-        h_t = torch.zeros(batch_size, self.hidden_size, device=x.device)
-        c_t = torch.zeros_like(h_t)
+        # h_t = torch.zeros(batch_size, self.hidden_size, device=x.device)
+        # c_t = torch.zeros_like(h_t)
+
+        h_t, c_t = self.lstm.init_hidden(batch_size)
 
         mem2 = self.lif1.reset_mem()
         
@@ -158,13 +245,15 @@ class SpikingLSTMSpikeSorter(nn.Module):
 
             # current_input = torch.cat((x[:, i].unsqueeze(-1), h_t), dim=1) # concatenate input and previous hidden state
             current_input = x[:, i].unsqueeze(-1) # only use the input, not the previous hidden state
-            h_t, c_t = self.lstm(current_input, (h_t, c_t))
+            # h_t, c_t = self.lstm(current_input, (h_t, c_t)) # for nn.LSTMCell
+            h_t, c_t = self.lstm(current_input, h_t, c_t) # for SpikingLSTMCell
 
             # current_input = torch.cat((x[:, i].unsqueeze(-1), spk1), dim=1) # concatenate input and previous hidden state
             # spk1, slstm_syn, slstm_mem = self.slstm(current_input, slstm_syn, slstm_mem)
 
-            curr = self.fc1(self.dropout(self.relu(h_t)))
+            # curr = self.fc1(self.dropout(self.relu(h_t)))
             # curr = self.fc1(spk1)
+            curr = self.fc1(self.dropout(h_t))
 
             spk2, mem2 = self.lif1(curr, mem2)
 
