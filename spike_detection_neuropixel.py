@@ -60,23 +60,23 @@ if __name__ == "__main__":
     complete_filename = filepath + filename
     ks_filepath = "./Neuropixel/AL036_2020-03-11/AL036_2020-03-11/ks"
 
-    sampling_rate = parser.sampling_rate
+    sampling_rate = args.sampling_rate
     sampling_interval = 1 / sampling_rate
     num_rows = 385
     num_channels = 384
-    window_size = parser.window_size # 240 seconds worth of data
+    window_size = args.window_size # 240 seconds worth of data
     
     total_samples = int(window_size * sampling_rate)
     
-    reset_mechanism = parser.reset_mechanism # "none", "subtract", "zero"
+    reset_mechanism = args.reset_mechanism # "none", "subtract", "zero"
 
-    label_window_size = parser.label_window_size
-    lif_threshold = parser.lif_threshold
-    lif_tau = parser.lif_tau * (1/30000)
+    label_window_size = args.label_window_size
+    lif_threshold = args.lif_threshold
+    lif_tau = args.lif_tau * (1 / sampling_rate)
 
-    examine_window_size = parser.examine_window_size # 1ms
-    skip_forward_window_size = parser.skip_forward_window_size # 0.5ms
-    spike_detection_threshold = parser.spike_detection_threshold # number of events to be exceeded to be classified as an AP.
+    examine_window_size = args.examine_window_size # 1ms
+    skip_forward_window_size = args.skip_forward_window_size # 0.5ms
+    spike_detection_threshold = args.spike_detection_threshold # number of events to be exceeded to be classified as an AP.
 
     with open(TRAINING_LOG_NAME, "a") as f:
         f.write(f"Seed Number: {SEED}\nevent density threshold: {spike_detection_threshold}\nexamin_window_size: {examine_window_size}\n")
