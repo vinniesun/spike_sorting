@@ -8,14 +8,17 @@ from torch.utils.data import Dataset
 from typing import List, Tuple
 
 class IntracorticalDataset(Dataset):
-    def __init__(self, spikes: torch.Tensor, labels: torch.Tensor):
+    def __init__(self, spikes: torch.Tensor, labels: torch.Tensor, transform=None):
         self.spikes = spikes
         self.labels = labels
+        self.transform = transform
 
     def __len__(self):
         return self.spikes.shape[0]
 
     def __getitem__(self, idx):
+        if self.transform:
+            return self.transform(self.spikes[idx]), self.labels[idx]
         return self.spikes[idx], self.labels[idx]
 
 def get_threshold_reset_counts(input_signal, last_reset_voltage, off_threshold, on_threshold, pulse, num_threshold_reset):

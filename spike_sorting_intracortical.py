@@ -155,21 +155,21 @@ def test(
     if final_test:
         # tqdm.write(f"Final Test Accuracy: {test_acc:.4f}")
         with open(TRAINING_LOG_NAME, "a") as f:
-            f.write(f"\t\tFinal Test Accuracy: {test_acc:.4f}\n")
+            f.write(f"\t\tFor {model_type} Model - Final Test Accuracy: {test_acc:.4f}\n")
 
 if __name__ == "__main__":
     """
         Dataset downloaded from: https://figshare.le.ac.uk/articles/dataset/Simulated_dataset/11897595?file=21819066
     """
     BATCH_SIZE = 256 # 128 or 64
-    NUM_EPOCHS= 120 # 60 epochs seems to work for lstm + lif model. slstm + lif seems to need more epochs.
+    NUM_EPOCHS= 60 # 60 epochs seems to work for lstm + lif model. slstm + lif seems to need more epochs.
 
     TRAINING_LOG_PATH = "./spike_sorting_training_log"
     if not os.path.exists(TRAINING_LOG_PATH):
         os.makedirs(TRAINING_LOG_PATH)
     TRAINING_LOG_NAME = f"{TRAINING_LOG_PATH}/training_log_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.txt"
 
-    SEED = 1337 # 1337, 5673, 1234
+    SEED = 1234 # 1337, 5673, 1234
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
     random.seed(SEED)
     np.random.seed(SEED)

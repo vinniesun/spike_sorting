@@ -1,3 +1,5 @@
+import argparse
+
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
@@ -17,7 +19,12 @@ from utils import (
     train_test_split_spike_sorting,
     generate_event_stream_dm,
 )
-from model import SpikingLSTMSpikeSorter
+from model import (
+    SpikingLSTMSpikeSorter, 
+    RAFSpikingLSTMSpikeSorter
+)
+from transform import SwapAdjacent
+from torchvision.transforms import v2
 
 def train(
     net,
@@ -161,6 +168,12 @@ if __name__ == "__main__":
     """
         Dataset downloaded from: https://figshare.le.ac.uk/articles/dataset/Simulated_dataset/11897595?file=21819066
     """
+    parser = argparse.ArgumentParser(description="Spike Detection on Neuropixel")
+    parser.add_argument("--seed", type=int, default=1234, help="Random seed") # 1337, 5673, 1234
+    parser.add_argument("--model_type", type=str, default="non_raf", choices=["raf", "non_raf"], help="Model used for spike sorting")
+    
+    args = parser.parse_args()
+
     BATCH_SIZE = 256 # 128 or 64
     NUM_EPOCHS= 120 # 60 epochs seems to work for lstm + lif model. slstm + lif seems to need more epochs.
 
@@ -169,7 +182,7 @@ if __name__ == "__main__":
         os.makedirs(TRAINING_LOG_PATH)
     TRAINING_LOG_NAME = f"{TRAINING_LOG_PATH}/training_log_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.txt"
 
-    SEED = 1337 # 1337, 5673, 1234
+    SEED = args.seed # 1337, 5673, 1234
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
     random.seed(SEED)
     np.random.seed(SEED)
@@ -190,7 +203,7 @@ if __name__ == "__main__":
     encoder_threshold = 0.2
     lif_tau = 1 * (1/24000)
     detection_window_size = 8
-    sorting_window_size = 48 # 2ms
+    sorting_window_size = 32 # 2ms
 
     MODEL_FILENAME_ACC = f"./intracortical_weights/spike_sorting_best_model_acc.pth"
     MODEL_FILENAME_LOSS = f"./intracortical_weights/spike_sorting_best_model_loss.pth"
@@ -286,20 +299,53 @@ if __name__ == "__main__":
     complete_train_data = torch.cat(complete_train_data, dim=0)
     complete_train_labels = torch.cat(complete_train_labels, dim=0)
 
-    train_dataset = IntracorticalDataset(complete_train_data, complete_train_labels)
+    train_dataset = IntracorticalDataset(
+        complete_train_data, 
+        complete_train_labels,
+        # transform=v2.Compose([
+        #     SwapAdjacent(p=0.5)
+        # ])
+    )
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=False)
 
-    net = SpikingLSTMSpikeSorter(
-        input_dim=1,
-        hidden_size=128,
-        num_classes=len(spike_classes),
-    )
-    net.to(DEVICE)
-    test_net = copy.deepcopy(net)
-    
-    optimiser = torch.optim.AdamW(net.parameters(), lr=2e-3, betas=(0.9, 0.999), weight_decay=0.1)
+    if args.model_type == "non_raf":
+        net = SpikingLSTMSpikeSorter(
+            input_dim=1,
+            hidden_size=128,
+            num_classes=len(spike_classes),
+        )
+        net.to(DEVICE)
+        test_net = copy.deepcopy(net)
+        
+        optimiser = torch.optim.AdamW(net.parameters(), lr=2e-3, betas=(0.9, 0.999), weight_decay=0.1)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=NUM_EPOCHS, eta_min=1e-6)
+        
+    elif args.model_type == "raf":
+        net = RAFSpikingLSTMSpikeSorter(
+            input_dim=1,
+            hidden_size=128,
+            num_classes=len(spike_classes),
+        )
+        net.to(DEVICE)
+        test_net = copy.deepcopy(net)
+
+        optimiser = torch.optim.AdamW(
+            [
+                {'params': net.rafs.dual_omegas, 'lr': 0.00001},
+                {'params': net.rafs.dual_bs, 'lr': 0.00001},
+                {'params': net.rafs.dual_threshold, 'lr': 1e-8},
+                {'params': net.dtlif.beta, 'lr': 1e-4},
+                {'params': net.dtlif.pos_threshold, 'lr': 1e-4},
+                {'params': net.dtlif.neg_threshold, 'lr': 1e-4},
+                {'params': net.fc1.parameters()},
+                {'params': net.lif1.parameters()},
+            ], lr=1e-3, betas=(0.9, 0.999), weight_decay=0.01,
+        ) # This setting seems to work the best for Model2()
+        scheduler = None
+    else:
+        raise ValueError("Invalid model type. Choose either 'raf' or 'non_raf'.")
+
     loss_fn = SF.ce_count_loss()
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=NUM_EPOCHS, eta_min=1e-6)
 
     train(net, train_loader, optimiser, loss_fn, acc_mode="count", scheduler=scheduler) # acc_mode="temporal" or "count"
 

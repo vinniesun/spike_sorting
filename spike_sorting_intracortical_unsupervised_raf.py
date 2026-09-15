@@ -9,6 +9,7 @@ import os
 from datetime import datetime
 from tqdm import tqdm
 import copy
+import argparse
 
 from utils import (
     IntracorticalDataset,
@@ -17,10 +18,7 @@ from utils import (
     train_test_split_spike_sorting,
     generate_event_stream_dm,
 )
-from model import (
-    SpikingLSTMSpikeSorter, 
-    RAFSpikingLSTMSpikeSorter
-)
+from model import SpikingLSTMSpikeSorter
 
 def train(
     net,
@@ -164,15 +162,21 @@ if __name__ == "__main__":
     """
         Dataset downloaded from: https://figshare.le.ac.uk/articles/dataset/Simulated_dataset/11897595?file=21819066
     """
+    parser = argparse.ArgumentParser(description="Spike Detection on Neuropixel")
+    parser.add_argument("--seed", type=int, default=1234, help="Random seed") # 1337, 5673, 1234
+    parser.add_argument("--training_mode", type=str, default="reconstruction", choices=["reconstruction", "optimise"], help="Training mode for unsupervised spike sorting")
+
+    args = parser.parse_args()
+
     BATCH_SIZE = 256 # 128 or 64
-    NUM_EPOCHS= 20 # 60 epochs seems to work for lstm + lif model. slstm + lif seems to need more epochs.
+    NUM_EPOCHS = 60 # 60 epochs seems to work for lstm + lif model. slstm + lif seems to need more epochs.
 
     TRAINING_LOG_PATH = "./spike_sorting_training_log"
     if not os.path.exists(TRAINING_LOG_PATH):
         os.makedirs(TRAINING_LOG_PATH)
     TRAINING_LOG_NAME = f"{TRAINING_LOG_PATH}/training_log_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.txt"
 
-    SEED = 1234 # 1337, 5673, 1234
+    SEED = args.seed # 1337, 5673, 1234
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
     random.seed(SEED)
     np.random.seed(SEED)
@@ -193,12 +197,13 @@ if __name__ == "__main__":
     encoder_threshold = 0.2
     lif_tau = 1 * (1/24000)
     detection_window_size = 8
-    sorting_window_size = 32 # 2ms
-    
+    sorting_window_size = 48 # 2ms
+
     DETECTION_IDX = f"Intracortical_Spike_Detection_IDX.txt"
 
-    PRETRAIN_MODEL_FILENAME = f"./intracortical_weights/spike_sorting_best_model_acc.pth"
-
+    # parse the detection_idx file to get the detection idx and spike time idx for each file
+    # The reason for this is that other papers only do spike sorting on the detected spikes,
+    # not the entire signal. 
     detection_idx_results_when_detected = {}
     detection_idx_results_label_spike_time = {}
     with open(DETECTION_IDX, "r") as f:
@@ -224,11 +229,12 @@ if __name__ == "__main__":
         for noise_level in ["005", "01", "015", "02"]:
             filename = f"C_{difficulty}_noise{noise_level}.mat"
 
+            # need two model filename, one for saving by best acc, one for saving by best loss
             MODEL_FILENAME_ACC = f"./intracortical_weights/{filename[:-4]}_spike_sorting_best_model_acc.pth"
             MODEL_FILENAME_LOSS = f"./intracortical_weights/{filename[:-4]}_spike_sorting_best_model_loss.pth"
-
+            
             with open(TRAINING_LOG_NAME, "a") as f:
-                f.write(f"Filename: {filename}.\n")
+                f.write(f"Current Setting: filename: {filename}\n\n")
 
             signal, spike_class_label, spike_times, sampling_interval, \
             sampling_rate, spike_pulse_1ms_idx_length, spike_classes, \
@@ -266,7 +272,16 @@ if __name__ == "__main__":
                     all_spk_trains[spike_class_label[i]].append(
                         spike_train[detected_spike_times[idx] - detection_window_size:detected_spike_times[idx] + sorting_window_size - detection_window_size]
                     )
-            
+
+                # if i == 100:
+                #     fig, ax = plt.subplots(2, 1, figsize=(10, 6))
+                #     ax[0].plot(filtered_signal[spike_times[i] - 23:spike_times[i] + 24])
+                #     ax[1].stem(spike_train[spike_times[i] - 23:spike_times[i] + 24])
+
+                #     plt.tight_layout()
+                #     plt.savefig(f"verify_spike_det_labeling/spike_{i}_label_{spike_class_label[i]}_signal_and_spike_train.jpg", dpi=300)
+                #     plt.close()
+
             train_spk_train, test_spk_train, \
             train_signal, test_signal, \
             train_label, test_label = train_test_split_spike_sorting(
@@ -276,6 +291,7 @@ if __name__ == "__main__":
                 train_test_split_ratio
             )
 
+            ######## Setup Training & Test Tensors ########
             training_spikes_tensor = torch.tensor(np.array(train_spk_train), dtype=torch.float32) # train_spk_train or filtered_spk_trains
             training_labels_tensor = torch.tensor(train_label, dtype=torch.long) - 1   # Offset by 1 to start from 0
             
@@ -290,18 +306,27 @@ if __name__ == "__main__":
 
             net = SpikingLSTMSpikeSorter(
                 input_dim=1,
-                hidden_size=128,
+                hidden_size=128, # was 128
                 num_classes=len(spike_classes),
             )
-            net.load_state_dict(torch.load(PRETRAIN_MODEL_FILENAME, weights_only=True))
-            
             net.to(DEVICE)
             test_net = copy.deepcopy(net)
-            
-            optimiser = torch.optim.AdamW(net.parameters(), lr=5e-4, betas=(0.9, 0.999), weight_decay=0.1)
-            loss_fn = SF.ce_count_loss()
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=NUM_EPOCHS, eta_min=1e-6)
-            
+
+            # reconstruction mode is to train the encoder to obtain good latent embeddings
+            # will use PCA to verify how good the latent embeddings are for clustering
+            if args.training_mode == "reconstruction":
+                optimiser = torch.optim.AdamW(net.parameters(), lr=2e-3, betas=(0.9, 0.999), weight_decay=0.1)
+                # loss_fn = nn.MSELoss() # cou
+                loss_fn = nn.L1Loss()
+                scheduler = None
+            # optimise mode is to train the encoder + kmeans cluster for spike sorting
+            elif args.training_mode == "optimise":
+                optimiser = torch.optim.AdamW(net.parameters(), lr=2e-3, betas=(0.9, 0.999), weight_decay=0.1)
+                loss_fn = SF.ce_count_loss()
+                scheduler = None
+            else:
+                raise ValueError("Invalid training mode. Choose either 'reconstruction' or 'optimise'.")
+
             train(net, train_loader, optimiser, loss_fn, acc_mode="count", scheduler=scheduler) # acc_mode="temporal" or "count"
             test(test_net, test_loader, acc_mode="count", model_type="acc", final_test=True, visualise=True)
             test(test_net, test_loader, acc_mode="count", model_type="loss", final_test=True, visualise=True)

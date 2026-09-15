@@ -30,7 +30,7 @@ if __name__ == "__main__":
     parser.add_argument("--sampling_rate", type=int, default=30000, help="Sampling rate for Neuropixel Dataset")
     parser.add_argument("--window_size", type=int, default=240, help="Window size for Neuropixel Dataset in seconds")
     parser.add_argument("--label_window_size", type=int, default=3, help="Window size for labeling spikes")
-    parser.add_argument("--lif_threshold", type=float, default=0.1, help="LIF threshold for spike detection")
+    parser.add_argument("--lif_threshold", type=int, default=3, help="LIF threshold for spike detection")
     parser.add_argument("--lif_tau", type=int, default=1, help="LIF tau for spike detection")
     parser.add_argument("--examine_window_size", type=int, default=8, help="Window size for examining spikes")
     parser.add_argument("--skip_forward_window_size", type=int, default=12, help="Window size for skipping forward in spike detection")
@@ -71,7 +71,7 @@ if __name__ == "__main__":
     reset_mechanism = args.reset_mechanism # "none", "subtract", "zero"
 
     label_window_size = args.label_window_size
-    lif_threshold = args.lif_threshold
+    lif_threshold_multiplier = args.lif_threshold
     lif_tau = args.lif_tau * (1 / sampling_rate)
 
     examine_window_size = args.examine_window_size # 1ms
@@ -81,7 +81,16 @@ if __name__ == "__main__":
     with open(TRAINING_LOG_NAME, "a") as f:
         f.write(f"Seed Number: {SEED}\nevent density threshold: {spike_detection_threshold}\nexamin_window_size: {examine_window_size}\n")
         f.write(f"skip_forward_window_size: {skip_forward_window_size}\nlabel_window_size: {label_window_size}\n")
-        f.write(f"lif_threshold: {lif_threshold}\nlif_tau: {lif_tau}\nreset_mechanism: {reset_mechanism}\n")
+        f.write(f"lif_threshold_multiplier: {lif_threshold_multiplier}\nlif_tau: {lif_tau}\nreset_mechanism: {reset_mechanism}\n")
+
+    spike_amplitudes = []
+    with open(f"Neuropixel_Spike_Amplitudes.txt", "r") as f:
+        lines = f.readlines()
+    for line in lines:
+        _, amp = line.split(" = ")
+        spike_amplitudes.append(float(amp))
+
+    lif_threshold = np.array(spike_amplitudes) * lif_threshold_multiplier
 
     raw_data = []
     for i in range(num_channels):
@@ -104,7 +113,7 @@ if __name__ == "__main__":
     for i in tqdm(range(num_channels), desc="Generating DV for all channels"):
         dv_u_hist, dv_spike_train, dv_time_lif = dv_to_lif_spike_gen(
             signal=raw_data[i],
-            lif_threshold=lif_threshold,
+            lif_threshold=lif_threshold[i],
             sampling_interval=sampling_interval,
             lif_tau=lif_tau,
             reset_mechanism=reset_mechanism
