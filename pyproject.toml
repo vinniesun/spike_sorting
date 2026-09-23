@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "dcls>=0.1.1",
     "einops==0.8.1",
     "h5py==3.14.0",
     "matplotlib==3.10.0",
@@ -16,5 +17,6 @@ dependencies = [
     "seaborn>=0.13.2",
     "snntorch==0.9.4",
     "torch==2.5.0",
+    "torchvision==0.20.0",
     "tqdm>=4.67.1",
 ]
