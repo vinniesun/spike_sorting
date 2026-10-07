@@ -1,3 +1,5 @@
+import argparse
+
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
@@ -19,7 +21,10 @@ from utils import (
 )
 from model import (
     SpikingLSTMSpikeSorter, 
-    RAFSpikingLSTMSpikeSorter
+    RAFSpikingLSTMSpikeSorter,
+    WindowLSTMSpikeSorter,
+    DCLSWindowLSTMSpikeSorter,
+    DCLSWindowLSTMSpikeSorterV2
 )
 
 def train(
@@ -40,9 +45,15 @@ def train(
             label = label.to(DEVICE) # shape (batch_size)
             # print(f"data shape: {data.shape}, label shape: {label.shape}")
 
-            spk_out = net(data)
+            if acc_mode == "count":
+                spk_out = net(data)
+            elif acc_mode == "max_membrane":
+                mem_out = net(data)
 
-            loss = loss_fn(spk_out, label)
+            if acc_mode == "count":
+                loss = loss_fn(spk_out, label)
+            elif acc_mode == "max_membrane":
+                loss = loss_fn(mem_out, label)
             curr_loss += loss.item()
 
             optimiser.zero_grad()
@@ -59,7 +70,10 @@ def train(
                 data = data.to(DEVICE)
                 label = label.to(DEVICE)
 
-                spk_out = net(data)
+                if acc_mode == "count" or acc_mode == "temporal":
+                    spk_out = net(data)
+                elif acc_mode == "max_membrane":
+                    mem_out = net(data)
 
                 if acc_mode == "count":
                     idx = spk_out.sum(0).argmax(1)
@@ -68,8 +82,12 @@ def train(
                 elif acc_mode == "temporal":
                     complete_spikes.append(spk_out)
                     complete_label.append(label)
+                elif acc_mode == "max_membrane":
+                    idx = mem_out.argmax(-1)
+                    correct_samples += (idx == label).sum().item()
+                    total_samples += label.shape[0]
 
-        if acc_mode == "count":
+        if acc_mode == "count" or acc_mode == "max_membrane":
             train_acc = correct_samples / total_samples
         elif acc_mode == "temporal":
             complete_spikes = torch.cat(complete_spikes, dim=1)
@@ -97,7 +115,6 @@ def test(
     test_loader,
     acc_mode="count",
     model_type="acc",
-    visualise: bool=False,
     final_test: bool=False,
 ):
     if model_type == "acc":
@@ -116,40 +133,28 @@ def test(
             data = data.to(DEVICE)
             label = label.to(DEVICE)
 
-            if visualise:
+            if acc_mode == "count" or acc_mode == "temporal":
                 spk_out = net(data)
+            elif acc_mode == "max_membrane":
+                mem_out = net(data)
 
-                # correct, total, idx = calc_population_code(raf_spk, label, num_classes=2, pop_size=raf_spk.shape[-1], return_predictions=True)
-                # correct_samples += correct
-                # total_samples += total
+            # correct, total = calc_population_code(raf_spk, label, num_classes=2, pop_size=raf_spk.shape[-1])
+            # correct_samples += correct
+            # total_samples += total
 
-                if acc_mode == "count":
-                    idx = spk_out.sum(0).argmax(1)
-                    correct_samples += (idx == label).sum().item()
-                    total_samples += label.shape[0]
+            if acc_mode == "count":
+                idx = spk_out.sum(0).argmax(1)
+                correct_samples += (idx == label).sum().item()
+                total_samples += label.shape[0]
+            elif acc_mode == "temporal":
+                complete_spikes.append(spk_out)
+                complete_label.append(label)
+            elif acc_mode == "max_membrane":
+                idx = mem_out.argmax(-1)
+                correct_samples += (idx == label).sum().item()
+                total_samples += label.shape[0]
 
-                    # visualise_test_results(net, data, label, idx, raf_spk, raf_u, lif_spk, i)
-                elif acc_mode == "temporal":
-                    complete_spikes.append(spk_out)
-                    complete_label.append(label)
-
-                    # visualise_test_results(net, data, label, torch.zeros(data.shape[0], dtype=torch.long), raf_spk, raf_u, lif_spk, i)
-            else:
-                spk_out = net(data)
-
-                # correct, total = calc_population_code(raf_spk, label, num_classes=2, pop_size=raf_spk.shape[-1])
-                # correct_samples += correct
-                # total_samples += total
-
-                if acc_mode == "count":
-                    idx = spk_out.sum(0).argmax(1)
-                    correct_samples += (idx == label).sum().item()
-                    total_samples += label.shape[0]
-                elif acc_mode == "temporal":
-                    complete_spikes.append(spk_out)
-                    complete_label.append(label)
-
-    if acc_mode == "count":
+    if acc_mode == "count" or acc_mode == "max_membrane":
         test_acc = correct_samples / total_samples
     elif acc_mode == "temporal":
         complete_spikes = torch.cat(complete_spikes, dim=1)
@@ -164,6 +169,13 @@ if __name__ == "__main__":
     """
         Dataset downloaded from: https://figshare.le.ac.uk/articles/dataset/Simulated_dataset/11897595?file=21819066
     """
+    parser = argparse.ArgumentParser(description="Spike Detection on Neuropixel")
+    parser.add_argument("--seed", type=int, default=1234, help="Random seed") # 1337, 5673, 1234
+    parser.add_argument("--model_type", type=str, default="non_raf", choices=["raf", "non_raf", "window", "delay"], help="Model used for spike sorting")    
+    parser.add_argument("--acc_mode", type=str, default="count", choices=["count", "temporal", "max_membrane"], help="Accuracy mode for training and testing")
+    
+    args = parser.parse_args()
+
     BATCH_SIZE = 256 # 128 or 64
     NUM_EPOCHS= 20 # 60 epochs seems to work for lstm + lif model. slstm + lif seems to need more epochs.
 
@@ -172,7 +184,7 @@ if __name__ == "__main__":
         os.makedirs(TRAINING_LOG_PATH)
     TRAINING_LOG_NAME = f"{TRAINING_LOG_PATH}/training_log_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.txt"
 
-    SEED = 1234 # 1337, 5673, 1234
+    SEED = args.seed # 1337, 5673, 1234
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
     random.seed(SEED)
     np.random.seed(SEED)
@@ -220,15 +232,10 @@ if __name__ == "__main__":
     
         line_no += 1
 
+    complete_train_data, complete_train_labels, complete_test_data, complete_test_labels = dict(), dict(), dict(), dict()
     for difficulty in ["Difficult1", "Difficult2", "Easy1", "Easy2"]:
         for noise_level in ["005", "01", "015", "02"]:
             filename = f"C_{difficulty}_noise{noise_level}.mat"
-
-            MODEL_FILENAME_ACC = f"./intracortical_weights/{filename[:-4]}_spike_sorting_best_model_acc.pth"
-            MODEL_FILENAME_LOSS = f"./intracortical_weights/{filename[:-4]}_spike_sorting_best_model_loss.pth"
-
-            with open(TRAINING_LOG_NAME, "a") as f:
-                f.write(f"Filename: {filename}.\n")
 
             signal, spike_class_label, spike_times, sampling_interval, \
             sampling_rate, spike_pulse_1ms_idx_length, spike_classes, \
@@ -282,26 +289,71 @@ if __name__ == "__main__":
             test_spikes_tensor = torch.tensor(np.array(test_spk_train), dtype=torch.float32)    # test_spk_train or filtered_spk_trains_test
             test_labels_tensor = torch.tensor(test_label, dtype=torch.long) - 1         # Offset by 1 to start from 0
 
-            train_dataset = IntracorticalDataset(training_spikes_tensor, training_labels_tensor)
-            test_dataset = IntracorticalDataset(test_spikes_tensor, test_labels_tensor)
-            
+            complete_train_data[filename[:-4]] = training_spikes_tensor
+            complete_train_labels[filename[:-4]] = training_labels_tensor
+            complete_test_data[filename[:-4]] = test_spikes_tensor
+            complete_test_labels[filename[:-4]] = test_labels_tensor
+
+    for difficulty in ["Difficult1", "Difficult2", "Easy1", "Easy2"]:
+        for noise_level in ["005", "01", "015", "02"]:
+            filename = f"C_{difficulty}_noise{noise_level}.mat"
+
+            MODEL_FILENAME_ACC = f"./intracortical_weights/{filename[:-4]}_spike_sorting_best_model_acc.pth"
+            MODEL_FILENAME_LOSS = f"./intracortical_weights/{filename[:-4]}_spike_sorting_best_model_loss.pth"
+
+            with open(TRAINING_LOG_NAME, "a") as f:
+                f.write(f"Filename: {filename}.\n")
+
+            train_dataset = IntracorticalDataset(complete_train_data[filename[:-4]], complete_train_labels[filename[:-4]])
+            test_dataset = IntracorticalDataset(complete_test_data[filename[:-4]], complete_test_labels[filename[:-4]])
+
             train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=False)
             test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=False)
 
-            net = SpikingLSTMSpikeSorter(
-                input_dim=1,
-                hidden_size=128,
-                num_classes=len(spike_classes),
-            )
+            if args.model_type == "non_raf":
+                net = SpikingLSTMSpikeSorter(
+                    input_dim=1,
+                    hidden_size=128,
+                    num_classes=len(spike_classes),
+                    acc_mode=args.acc_mode
+                )
+            elif args.model_type == "window":
+                net = WindowLSTMSpikeSorter(
+                    input_dim=5,
+                    hidden_size=128,
+                    num_classes=len(spike_classes),
+                    acc_mode=args.acc_mode
+                )
+            elif args.model_type == "delay":
+                net = DCLSWindowLSTMSpikeSorter(
+                    input_dim=3,
+                    hidden_size=128,
+                    kernel_count=1,
+                    dilated_kernel_size=1,
+                    num_classes=len(spike_classes),
+                    acc_mode=args.acc_mode
+                )
+            elif args.model_type == "raf":
+                net = RAFSpikingLSTMSpikeSorter(
+                    input_dim=1,
+                    hidden_size=128,
+                    num_classes=len(spike_classes),
+                )
+            else:
+                raise ValueError("Invalid model type. Choose either 'raf', 'window', or 'non_raf'.")
+            
             net.load_state_dict(torch.load(PRETRAIN_MODEL_FILENAME, weights_only=True))
             
             net.to(DEVICE)
             test_net = copy.deepcopy(net)
             
             optimiser = torch.optim.AdamW(net.parameters(), lr=5e-4, betas=(0.9, 0.999), weight_decay=0.1)
-            loss_fn = SF.ce_count_loss()
+            if args.acc_mode == "count" or args.acc_mode == "temporal":
+                loss_fn = SF.ce_count_loss()
+            elif args.acc_mode == "max_membrane":
+                loss_fn = nn.CrossEntropyLoss()
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=NUM_EPOCHS, eta_min=1e-6)
             
-            train(net, train_loader, optimiser, loss_fn, acc_mode="count", scheduler=scheduler) # acc_mode="temporal" or "count"
-            test(test_net, test_loader, acc_mode="count", model_type="acc", final_test=True, visualise=True)
-            test(test_net, test_loader, acc_mode="count", model_type="loss", final_test=True, visualise=True)
+            train(net, train_loader, optimiser, loss_fn, acc_mode=args.acc_mode, scheduler=scheduler) # acc_mode="temporal" or "count"
+            test(test_net, test_loader, acc_mode=args.acc_mode, model_type="acc", final_test=True)
+            test(test_net, test_loader, acc_mode=args.acc_mode, model_type="loss", final_test=True)

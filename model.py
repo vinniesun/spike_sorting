@@ -4,6 +4,8 @@ import snntorch as snn
 from snntorch.surrogate import atan
 from einops import repeat
 
+from DCLS.construct.modules import Dcls1d
+
 from neurons import ABRF, DBRF, DTLIF
 
 from typing import Tuple, Union, List, Optional
@@ -138,6 +140,21 @@ class LSTMCell(nn.Module):
         return h_t, c_t
 
 """
+    Based on the paper: "Dilated convolution with learnable spacings"
+"""
+class DCLS1d(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+
+    ):
+        super().__init__()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x
+
+"""
     Based on the paper: Long Short-Term Memory Spiking Networks and Their Applications
     (https://arxiv.org/pdf/2007.04779)
 """
@@ -202,12 +219,14 @@ class SpikingLSTMSpikeSorter(nn.Module):
         input_dim: int,
         hidden_size: int,
         num_classes: int,
+        acc_mode: str = "count"
     ):
         super().__init__()
 
         self.input_dim = input_dim
         self.hidden_size = hidden_size
         self.num_classes = num_classes
+        self.acc_mode = acc_mode
 
         # self.slstm = snn.SLSTM(
         #     input_size=input_dim + hidden_size, # recurrence dim: input_dim + hidden_size. non-recurrent dim: input_dim
@@ -247,16 +266,30 @@ class SpikingLSTMSpikeSorter(nn.Module):
 
         self.fc1 = nn.Linear(hidden_size, num_classes)
         # self.fc1 = nn.Linear(hidden_size*2, num_classes)
-        self.lif1 = snn.Leaky(
-            # beta=0.9 * torch.ones(num_classes),
-            # threshold=0.2 * torch.ones(num_classes),
-            beta=0.9,
-            threshold=0.2,
-            reset_mechanism="subtract",
-            spike_grad=atan(), # step_double_gaussian()/atan()
-            learn_beta=True,
-            learn_threshold=True,
-        )
+        if acc_mode == "count":
+            self.lif1 = snn.Leaky(
+                # beta=0.9 * torch.ones(num_classes),
+                # threshold=0.2 * torch.ones(num_classes),
+                beta=0.9,
+                threshold=0.2,
+                reset_mechanism="subtract",
+                spike_grad=atan(), # step_double_gaussian()/atan()
+                learn_beta=True,
+                learn_threshold=True,
+                # reset_delay=False,
+            )
+        elif acc_mode == "max_membrane":
+            self.lif1 = snn.Leaky(
+                # beta=0.9 * torch.ones(num_classes),
+                # threshold=0.2 * torch.ones(num_classes),
+                beta=0.9,
+                threshold=0.2,
+                reset_mechanism="none",
+                spike_grad=atan(), # step_double_gaussian()/atan()
+                learn_beta=True,
+                learn_threshold=True,
+                # reset_delay=False,
+            )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         batch_size, seq_len = x.shape
@@ -276,6 +309,290 @@ class SpikingLSTMSpikeSorter(nn.Module):
 
             spk2_hist.append(spk2)
 
+        if self.acc_mode == "max_membrane":
+            return mem2
+        
+        return torch.stack(spk2_hist, dim=0)
+
+class DCLSWindowLSTMSpikeSorter(nn.Module):
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_size: int,
+        kernel_count: int,
+        dilated_kernel_size: int,
+        num_classes: int,
+        acc_mode: str = "count"
+    ):
+        super().__init__()
+
+        self.input_dim = input_dim
+        self.hidden_size = hidden_size
+        self.kernel_count = kernel_count
+        self.dilated_kernel_size = dilated_kernel_size
+        self.num_classes = num_classes
+        self.acc_mode = acc_mode
+
+        self.dcls = Dcls1d(
+            in_channels=input_dim,
+            out_channels=input_dim,
+            kernel_count=kernel_count,
+            dilated_kernel_size=dilated_kernel_size,
+            padding_mode="zeros",
+            version="gauss"
+        )
+
+        self.lstm = nn.LSTMCell(
+            input_size=input_dim, # recurrence dim: input_dim + hidden_size. non-recurrent dim: input_dim
+            hidden_size=hidden_size,
+            bias=True
+        )
+
+        self.pool = nn.AvgPool1d(kernel_size=3, stride=1, padding=1) # padding=1 to keep the same length as input
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(p=0.3)
+
+        self.fc1 = nn.Linear(hidden_size, num_classes)
+        # self.fc1 = nn.Linear(hidden_size*2, num_classes)
+        if acc_mode == "count":
+            self.lif1 = snn.Leaky(
+                # beta=0.9 * torch.ones(num_classes),
+                # threshold=0.2 * torch.ones(num_classes),
+                beta=0.9,
+                threshold=0.2,
+                reset_mechanism="subtract",
+                spike_grad=atan(), # step_double_gaussian()/atan()
+                learn_beta=True,
+                learn_threshold=True,
+                # reset_delay=False,
+            )
+        elif acc_mode == "max_membrane":
+            self.lif1 = snn.Leaky(
+                # beta=0.9 * torch.ones(num_classes),
+                # threshold=0.2 * torch.ones(num_classes),
+                beta=0.9,
+                threshold=0.2,
+                reset_mechanism="none",
+                spike_grad=atan(), # step_double_gaussian()/atan()
+                learn_beta=True,
+                learn_threshold=True,
+                # reset_delay=False,
+            )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        batch_size, seq_len = x.shape
+
+        windows = x.unfold(dimension=1, size=self.input_dim, step=1).transpose(1, 2)  # Shape: (batch_size, input_dim, seq_len - input_dim + 1)
+        windows = self.dcls(windows).permute(2, 0, 1) # Shape: (seq_len - input_dim + 1, batch_size, input_dim)
+
+        h_t = torch.zeros(batch_size, self.hidden_size, device=x.device)    # for nn.LSTMCell
+        c_t = torch.zeros_like(h_t)                                         # for nn.LSTMCell
+
+        mem2 = self.lif1.reset_mem()
+        
+        spk2_hist = []
+        for current_input in windows:  # current_input shape: (batch_size, input_dim)
+            h_t, c_t = self.lstm(current_input, (h_t, c_t)) # for nn.LSTMCell
+            curr = self.fc1(self.relu(h_t))
+            spk2, mem2 = self.lif1(curr, mem2)
+
+            spk2_hist.append(spk2)
+
+        if self.acc_mode == "max_membrane":
+            return mem2
+        
+        return torch.stack(spk2_hist, dim=0)
+
+class DCLSWindowLSTMSpikeSorterV2(nn.Module):
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_size: int,
+        kernel_count: int,
+        dilated_kernel_size: int,
+        num_classes: int,
+        acc_mode: str = "count"
+    ):
+        super().__init__()
+
+        self.input_dim = input_dim
+        self.hidden_size = hidden_size
+        self.kernel_count = kernel_count
+        self.dilated_kernel_size = dilated_kernel_size
+        self.num_classes = num_classes
+        self.acc_mode = acc_mode
+
+        self.dcls = Dcls1d(
+            in_channels=1,
+            out_channels=1,
+            kernel_count=kernel_count,
+            dilated_kernel_size=dilated_kernel_size,
+            padding_mode="zeros",
+            version="gauss"
+        )
+
+        self.lstm = nn.LSTMCell(
+            input_size=input_dim, # recurrence dim: input_dim + hidden_size. non-recurrent dim: input_dim
+            hidden_size=hidden_size,
+            bias=True
+        )
+
+        self.pool = nn.AvgPool1d(kernel_size=3, stride=1, padding=1) # padding=1 to keep the same length as input
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(p=0.3)
+
+        self.fc1 = nn.Linear(hidden_size, num_classes)
+        # self.fc1 = nn.Linear(hidden_size*2, num_classes)
+        if acc_mode == "count":
+            self.lif1 = snn.Leaky(
+                # beta=0.9 * torch.ones(num_classes),
+                # threshold=0.2 * torch.ones(num_classes),
+                beta=0.9,
+                threshold=0.2,
+                reset_mechanism="subtract",
+                spike_grad=atan(), # step_double_gaussian()/atan()
+                learn_beta=True,
+                learn_threshold=True,
+                # reset_delay=False,
+            )
+        elif acc_mode == "max_membrane":
+            self.lif1 = snn.Leaky(
+                # beta=0.9 * torch.ones(num_classes),
+                # threshold=0.2 * torch.ones(num_classes),
+                beta=0.9,
+                threshold=0.2,
+                reset_mechanism="none",
+                spike_grad=atan(), # step_double_gaussian()/atan()
+                learn_beta=True,
+                learn_threshold=True,
+                # reset_delay=False,
+            )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        batch_size, seq_len = x.shape
+
+        x_delay = self.dcls(x.unsqueeze(1)).squeeze(1)  # Shape: (batch_size, seq_len) -> (batch_size, 1, seq_len) -> (batch_size, seq_len)
+
+        windows = x_delay.unfold(dimension=1, size=self.input_dim, step=1).transpose(1, 2)  # Shape: (batch_size, input_dim, seq_len - input_dim + 1)
+        windows = windows.permute(2, 0, 1) # Shape: (seq_len - input_dim + 1, batch_size, input_dim)
+
+        h_t = torch.zeros(batch_size, self.hidden_size, device=x.device)    # for nn.LSTMCell
+        c_t = torch.zeros_like(h_t)                                         # for nn.LSTMCell
+
+        mem2 = self.lif1.reset_mem()
+        
+        spk2_hist = []
+        for current_input in windows:  # current_input shape: (batch_size, input_dim)
+            h_t, c_t = self.lstm(current_input, (h_t, c_t)) # for nn.LSTMCell
+            curr = self.fc1(self.relu(h_t))
+            spk2, mem2 = self.lif1(curr, mem2)
+
+            spk2_hist.append(spk2)
+
+        if self.acc_mode == "max_membrane":
+            return mem2
+        
+        return torch.stack(spk2_hist, dim=0)
+
+class WindowLSTMSpikeSorter(nn.Module):
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_size: int,
+        num_classes: int,
+        acc_mode: str = "count"
+    ):
+        super().__init__()
+
+        self.input_dim = input_dim
+        self.hidden_size = hidden_size
+        self.num_classes = num_classes
+        self.acc_mode = acc_mode
+
+        # self.slstm = snn.SLSTM(
+        #     input_size=input_dim + hidden_size, # recurrence dim: input_dim + hidden_size. non-recurrent dim: input_dim
+        #     hidden_size=hidden_size,
+        #     bias=True, # Don't include bias cause we dont want membrane potential to change when input = 0
+        #     threshold=0.5, # starting at 1.0 seems to high.
+        #     spike_grad=atan(), # step_double_gaussian()/atan()
+        #     learn_threshold=True,
+        #     reset_mechanism="subtract"
+        # )
+
+        self.lstm = nn.LSTMCell(
+            input_size=input_dim, # recurrence dim: input_dim + hidden_size. non-recurrent dim: input_dim
+            hidden_size=hidden_size,
+            bias=True
+        )
+        # self.lstm_reverse = nn.LSTMCell(
+        #     input_size=input_dim, # recurrence dim: input_dim + hidden_size. non-recurrent dim: input_dim
+        #     hidden_size=hidden_size,
+        #     bias=True
+        # )
+
+        # self.lstm = SpikingLSTMCell(
+        #     input_dim=input_dim,
+        #     hidden_dim=hidden_size,
+        #     surrogate_fn1=atan(0.8),
+        #     surrogate_fn2=atan(0.8),
+        #     threshold1=0.5,
+        #     threshold2=0.5,
+        #     learn_threshold=True,
+        #     bias=True
+        # )
+
+        self.pool = nn.AvgPool1d(kernel_size=3, stride=1, padding=1) # padding=1 to keep the same length as input
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(p=0.3)
+
+        self.fc1 = nn.Linear(hidden_size, num_classes)
+        # self.fc1 = nn.Linear(hidden_size*2, num_classes)
+        if acc_mode == "count":
+            self.lif1 = snn.Leaky(
+                # beta=0.9 * torch.ones(num_classes),
+                # threshold=0.2 * torch.ones(num_classes),
+                beta=0.9,
+                threshold=0.2,
+                reset_mechanism="subtract",
+                spike_grad=atan(), # step_double_gaussian()/atan()
+                learn_beta=True,
+                learn_threshold=True,
+                # reset_delay=False,
+            )
+        elif acc_mode == "max_membrane":
+            self.lif1 = snn.Leaky(
+                # beta=0.9 * torch.ones(num_classes),
+                # threshold=0.2 * torch.ones(num_classes),
+                beta=0.9,
+                threshold=0.2,
+                reset_mechanism="none",
+                spike_grad=atan(), # step_double_gaussian()/atan()
+                learn_beta=True,
+                learn_threshold=True,
+                # reset_delay=False,
+            )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        batch_size, seq_len = x.shape
+
+        h_t = torch.zeros(batch_size, self.hidden_size, device=x.device)    # for nn.LSTMCell
+        c_t = torch.zeros_like(h_t)                                         # for nn.LSTMCell
+
+        mem2 = self.lif1.reset_mem()
+        
+        spk2_hist = []
+        for i in range(seq_len - self.input_dim + 1):
+            current_input = x[:, i:i+self.input_dim] # only use the input, not the previous hidden state
+
+            h_t, c_t = self.lstm(current_input, (h_t, c_t)) # for nn.LSTMCell
+            curr = self.fc1(self.relu(h_t))
+            spk2, mem2 = self.lif1(curr, mem2)
+
+            spk2_hist.append(spk2)
+
+        if self.acc_mode == "max_membrane":
+            return mem2
+        
         return torch.stack(spk2_hist, dim=0)
 
 class RAFSpikingLSTMSpikeSorter(nn.Module):
@@ -301,7 +618,7 @@ class RAFSpikingLSTMSpikeSorter(nn.Module):
         self.rafs, self.dtlif = self.init_feature_extractors()
 
         self.lstm = nn.LSTMCell(
-            input_size=self.rafs.dual_omegas.shape[0] + self.dtlif.beta.shape[0], # recurrence dim: input_dim + hidden_size. non-recurrent dim: input_dim
+            input_size=self.rafs.dual_omegas.shape[0] + 1, # recurrence dim: input_dim + hidden_size. non-recurrent dim: input_dim
             hidden_size=hidden_size,
             bias=True
         )
@@ -324,8 +641,10 @@ class RAFSpikingLSTMSpikeSorter(nn.Module):
         )
 
     def init_feature_extractors(self):
-        interval1 = torch.arange(start=4, end=20, step=2, dtype=torch.float32)
-        interval2 = torch.arange(start=4, end=25, step=2, dtype=torch.float32)
+        # interval1 = torch.arange(start=4, end=20, step=2, dtype=torch.float32)
+        # interval2 = torch.arange(start=4, end=25, step=2, dtype=torch.float32)
+        interval1 = torch.arange(start=4, end=12, step=2, dtype=torch.float32)
+        interval2 = torch.arange(start=4, end=18, step=2, dtype=torch.float32)
 
         raf_omega_interval = torch.cartesian_prod(interval1, interval2)
         raf_omegas = torch.pi / (raf_omega_interval / 24000)
@@ -349,9 +668,12 @@ class RAFSpikingLSTMSpikeSorter(nn.Module):
         raf_q_coeff = torch.tensor([1e-1, 1e-3], dtype=torch.float32)
         raf_q_coeff = repeat(raf_q_coeff, 't -> b t', b=raf_omegas.shape[0]).clone()
         
-        betas = torch.linspace(start=0.01, end=1, steps=raf_omegas.shape[0], dtype=torch.float32)
-        pos_thresholds = torch.ones(raf_omegas.shape[0], dtype=torch.float32) * 3.0
-        neg_thresholds = torch.ones(raf_omegas.shape[0], dtype=torch.float32) * -3.0
+        # betas = torch.linspace(start=0.01, end=1, steps=raf_omegas.shape[0], dtype=torch.float32)
+        # pos_thresholds = torch.ones(raf_omegas.shape[0], dtype=torch.float32) * 3.0
+        # neg_thresholds = torch.ones(raf_omegas.shape[0], dtype=torch.float32) * -3.0
+        betas = torch.linspace(start=0.01, end=1, steps=10, dtype=torch.float32)
+        pos_thresholds = torch.ones(betas.shape[0], dtype=torch.float32) * 3.0
+        neg_thresholds = torch.ones(betas.shape[0], dtype=torch.float32) * -3.0
 
         rafs = DBRF(
             input_dim=raf_omegas.shape[0],
@@ -389,12 +711,13 @@ class RAFSpikingLSTMSpikeSorter(nn.Module):
         
         spk2_hist = []
         for i in range(seq_len):
-            raf_curr = torch.clamp(x[:, i].unsqueeze(-1), min=-1.0, max=1.0)
+            # raf_curr = torch.clamp(x[:, i].unsqueeze(-1), min=-1.0, max=1.0)
+            raf_curr = x[:, i].unsqueeze(-1) 
             raf_spk, u, v, q, use_t1 = self.rafs(raf_curr, hidden_states)
 
-            dt_spk, dt_mem = self.dtlif(x[:, i].unsqueeze(-1), dt_mem)
+            # dt_spk, dt_mem = self.dtlif(x[:, i].unsqueeze(-1), dt_mem)
 
-            combined_spks = torch.cat((raf_spk, dt_spk), dim=1) # Shape: (batch_size, # of RAF neurons + # of dtlif)
+            combined_spks = torch.cat((x[:, i].unsqueeze(-1), raf_spk), dim=1) # Shape: (batch_size, # of RAF neurons + # of dtlif)
 
             h_t, c_t = self.lstm(combined_spks, (h_t, c_t)) # for nn.LSTMCell
             curr = self.fc1(self.relu(h_t))
@@ -406,7 +729,7 @@ class RAFSpikingLSTMSpikeSorter(nn.Module):
 
         return torch.stack(spk2_hist, dim=0)
 
-class RAFAutoencoder(nn.Module):
+class LSTMAutoencoderOld(nn.Module):
     def __init__(
         self,
         input_dim: int,
@@ -417,19 +740,182 @@ class RAFAutoencoder(nn.Module):
         self.input_dim = input_dim
         self.hidden_size = hidden_size
 
-        # encoder contains: 
-        # 1. rafs that loops over the input sequence
-        # 2. linear layer/lstm layer that generates the embedding from the raf's output spikes
-        # 3. linear layer that generates the final latent embedding.
-        self.encoder = nn.Linear(input_dim, hidden_size)
+        # encoder
+        self.lstm_encoder = nn.LSTMCell(
+            input_size=input_dim, 
+            hidden_size=hidden_size,
+        )
 
-        # decoder contains:
-        # 1. linear layer that decodes the final latent embedding
-        # 2. linear layer that reconstructs the input sequence from the decoded embedding
-        self.decoder = nn.Linear(hidden_size, input_dim)
+        # decoder
+        self.lstm_decoder = nn.LSTMCell(
+            input_size=hidden_size, 
+            hidden_size=hidden_size,
+        )
+        self.fc_decoder = nn.Linear(hidden_size, input_dim)
+
+    def encode(self, x: torch.Tensor, h_t: torch.Tensor, c_t: torch.Tensor, seq_len: int) -> List[torch.Tensor]:
+        h_t_hist = []
+        for i in range(seq_len):
+            h_t, c_t = self.lstm_encoder(x[:, i].unsqueeze(-1), (h_t, c_t))
+
+            h_t_hist.append(h_t)
+
+        return h_t_hist
+
+    def decode(self, x: List[torch.Tensor], h_t: torch.Tensor, c_t: torch.Tensor, seq_len: int) -> torch.Tensor:
+        # here x[i] is the hidden state from the encoder
+        output = []
+        for i in range(seq_len):
+            h_t, c_t = self.lstm_decoder(x[i], (h_t, c_t))
+
+            output.append(self.fc_decoder(h_t))
+
+        return torch.stack(output, dim=1).squeeze(-1)
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        batch_size, seq_len = x.shape
+
+        h_t_enc = torch.zeros(batch_size, self.hidden_size, device=x.device)        # for nn.LSTMCell
+        c_t_enc = torch.zeros_like(h_t_enc)                                         # for nn.LSTMCell
+        h_t_dec = torch.zeros(batch_size, self.hidden_size, device=x.device)        # for nn.LSTMCell
+        c_t_dec = torch.zeros_like(h_t_dec)                                         # for nn.LSTMCell
+
+        h_t_encode_hist = self.encode(x, h_t_enc, c_t_enc, seq_len)
+        reconstructed = self.decode(h_t_encode_hist, h_t_dec, c_t_dec, seq_len)
+
+        return h_t_encode_hist[-1], reconstructed # Shape: (batch_size, seq_len)
+
+class LSTMAutoencoder(nn.Module):
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_size: int,
+        latent_dim: int
+    ):
+        super().__init__()
+
+        self.input_dim = input_dim
+        self.hidden_size = hidden_size
+        self.latent_dim = latent_dim
+
+        # encoder
+        self.lstm_encoder = nn.LSTM(
+            input_size=input_dim, 
+            hidden_size=hidden_size,
+            num_layers=1,
+            batch_first=True,
+            dropout=0.1
+        )
+        self.to_latent = nn.Linear(2 * hidden_size, latent_dim)
+
+        # decoder
+        self.from_latent = nn.Linear(latent_dim, 2 * hidden_size)
+        self.lstm_decoder = nn.LSTM(
+            input_size=input_dim, 
+            hidden_size=hidden_size,
+            num_layers=1,
+            batch_first=True,
+            dropout=0.1
+        )
+        self.fc_decoder = nn.Linear(hidden_size, input_dim)
+
+    def encode(self, x: torch.Tensor) -> list[torch.Tensor]:
+        _, (h, c) = self.encoder(x)                        # h, c: (L, B, H)
+        z = self.to_latent(torch.cat([h[-1], c[-1]], -1))  # (B, latent_dim)
+
+        return z
+
+    def decode(self, z: list[torch.Tensor], x: torch.Tensor, teacher_forcing: bool=True) -> torch.Tensor:
+        B, T, D = x.shape
+        h0c0 = self.from_latent(z)
+        h0, c0 = h0c0.chunk(2, dim=-1)
+        h0 = torch.tanh(h0).unsqueeze(0).contiguous()
+        c0 = c0.unsqueeze(0).contiguous()
+
+        # Reconstruct the REVERSED sequence (Srivastava et al. 2015) — easier to learn
+        target = torch.flip(x, dims=[1])
+
+        if teacher_forcing:
+            # input at step t = target at step t-1, first input = zeros
+            dec_in = torch.cat([torch.zeros(B, 1, D, device=x.device), target[:, :-1]], dim=1)
+            out, _ = self.decoder(dec_in, (h0, c0))
+
+            return self.fc_out(out), target
+        else:
+            # autoregressive (use at eval or with scheduled sampling)
+            inp = torch.zeros(B, 1, D, device=x.device)
+            state, outs = (h0, c0), []
+            for _ in range(T):
+                o, state = self.decoder(inp, state)
+                inp = self.fc_out(o)
+                outs.append(inp)
+
+            return torch.cat(outs, 1), target
+
+    def forward(self, x: torch.Tensor, teacher_forcing: bool=True) -> tuple[torch.Tensor, torch.Tensor]:
+        if x.dim() == 2:
+            x = x.unsqueeze(-1) # (B, T) -> (B, T, 1)
+
+        z = self.encode(x)
+        recon, target = self.decode(z, x, teacher_forcing)
+
+        return z, recon, target
+
+class KMeansHead(nn.Module):
+    def __init__(
+        self,
+        num_clusters,
+        hidden_dims,
+        centroids=None,
+    ):
+        super().__init__()
+
+        self.num_clusters = num_clusters
+        
+        if centroids is not None:
+            self.centroids = nn.Parameter(centroids)
+        else:
+            self.centroids = nn.Parameter(torch.randn(num_clusters, hidden_dims))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x
+        distances = (x.unsqueeze(1) - self.centroids.unsqueeze(0)).pow(2).sum(dim=-1)  # Shape: (batch_size, num_clusters)
+
+        min_distances, cluster_assignments = torch.min(distances, dim=1)  # Shape: (batch_size,)
+
+        return min_distances.mean(), cluster_assignments
+
+class KMeansHeadNew(nn.Module):
+    def __init__(
+        self,
+        num_clusters,
+        hidden_dims,
+        alpha=1.0,
+        centroids=None,
+    ):
+        super().__init__()
+
+        self.num_clusters = num_clusters
+        self.hidden_dims = hidden_dims
+        self.alpha = alpha
+        
+        if centroids is not None:
+            self.centroids = nn.Parameter(centroids)
+        else:
+            self.centroids = nn.Parameter(torch.randn(num_clusters, hidden_dims))
+
+    @staticmethod
+    def target_distribution(q):
+        # sharpen + normalize by cluster frequency (prevents collapse)
+        w = q ** 2 / q.sum(0)
+        return (w.t() / w.sum(1)).t()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Student's t kernel -> soft assignment q (B, K)
+        d2 = (x.unsqueeze(1) - self.centroids.unsqueeze(0)).pow(2).sum(-1)
+
+        q = (1.0 + d2 / self.alpha).pow(-(self.alpha + 1) / 2)
+
+        return q / q.sum(1, keepdim=True)
 
 class DBRFDTLIFModel(nn.Module):
     def __init__(
