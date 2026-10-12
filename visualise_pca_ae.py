@@ -45,6 +45,12 @@ if __name__ == "__main__":
         default=32,
         help="Hidden dimension for the autoencoder",
     )
+    parser.add_argument(
+        "--latent_dim",
+        type=int,
+        default=16,
+        help="Latent dimension for the autoencoder",
+    )
 
     args = parser.parse_args()
 
@@ -75,8 +81,6 @@ if __name__ == "__main__":
     detection_window_size = 8
     sorting_window_size = 32  # 2ms
 
-    MODEL_FILENAME_ACC = "./intracortical_weights/spike_sorting_kmeans_best_model_acc.pth"
-    MODEL_FILENAME_LOSS = "./intracortical_weights/spike_sorting_ae_best_model_loss.pth"
     DETECTION_IDX = "Intracortical_Spike_Detection_IDX.txt"
     PCA_ANALYSIS_DIR = "./pca_analysis/"
 
@@ -117,6 +121,11 @@ if __name__ == "__main__":
     for difficulty in ["Difficult1", "Difficult2", "Easy1", "Easy2"]:
         for noise_level in ["005", "01", "015", "02"]:
             filename = f"C_{difficulty}_noise{noise_level}.mat"
+
+            MODEL_FILENAME_ACC = f"./intracortical_weights/spike_sorting_kmeans_{filename[:-4]}_best_model_acc.pth"
+            MODEL_FILENAME_LOSS = f"./intracortical_weights/spike_sorting_ae_{filename[:-4]}_best_model_loss.pth"
+            # MODEL_FILENAME_ACC = "./intracortical_weights/spike_sorting_kmeans_best_model_acc.pth"
+            # MODEL_FILENAME_LOSS = "./intracortical_weights/spike_sorting_ae_best_model_loss.pth"
 
             (
                 signal,
@@ -221,7 +230,9 @@ if __name__ == "__main__":
                 labels_for_pca = []
                 net = LSTMAutoencoder(
                     input_dim=1,
+                    seq_len=training_spikes_tensor.shape[1],
                     hidden_size=args.hidden_dim,
+                    latent_dim=args.latent_dim,
                 )
                 net.to(DEVICE)
                 net.load_state_dict(torch.load(MODEL_FILENAME_LOSS, map_location=DEVICE, weights_only=True))
@@ -232,7 +243,7 @@ if __name__ == "__main__":
                         data = data.to(DEVICE)
                         label = label.to(DEVICE)
 
-                        latent_representation, reconstructed = net(data)
+                        latent_representation, reconstructed, _ = net(data)
 
                         inputs_for_pca.append(latent_representation.cpu().numpy())
                         labels_for_pca.append(label.cpu().numpy())
@@ -241,7 +252,7 @@ if __name__ == "__main__":
                         data = data.to(DEVICE)
                         label = label.to(DEVICE)
                 
-                        latent_representation, reconstructed = net(data)
+                        latent_representation, reconstructed, _ = net(data)
                 
                         inputs_for_pca.append(latent_representation.cpu().numpy())
                         labels_for_pca.append(label.cpu().numpy())

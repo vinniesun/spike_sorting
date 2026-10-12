@@ -4,8 +4,8 @@ import os
 import random
 from datetime import datetime
 
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -15,7 +15,7 @@ from sklearn.cluster import KMeans
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from model import KMeansHead, LSTMAutoencoder
+from model import KMeansHead, LinearAE, LSTMAutoencoder
 from utils import (
     IntracorticalDataset,
     dv_to_lif_spike_gen,
@@ -33,30 +33,22 @@ if __name__ == "__main__":
         "--seed", type=int, default=1234, help="Random seed"
     )  # 1337, 5673, 1234
     parser.add_argument(
-        "--model_type",
-        type=str,
-        default="ae",
-        choices=["ae", "kmeans"],
-        help="Model used for spike sorting",
-    )
-    parser.add_argument(
-        "--acc_mode",
-        type=str,
-        default="mse",
-        choices=["mse", "mae"],
-        help="Accuracy mode for training and testing",
-    )
-    parser.add_argument(
-        "--test_only",
-        type=bool,
-        default=False,
-        help="If True, only test the model without training",
-    )
-    parser.add_argument(
         "--hidden_dim",
         type=int,
         default=32,
         help="Hidden dimension for the autoencoder",
+    )
+    parser.add_argument(
+        "--latent_dim",
+        type=int,
+        default=16,
+        help="Latent dimension for the autoencoder",
+    )
+    parser.add_argument(
+        "--encoder_th",
+        type=float,
+        default=0.1,
+        help="Encoder threshold for the DM or DV encoder",
     )
 
     args = parser.parse_args()
@@ -83,13 +75,11 @@ if __name__ == "__main__":
     encoder = "dm"  # "dm" or "dv"
     reset_mechanism = "subtract"  # "none", "subtract", "zero"
     train_test_split_ratio = 0.7  # 70% training, 30% testing
-    encoder_threshold = 0.2
+    encoder_threshold = args.encoder_th
     lif_tau = 1 * (1 / 24000)
     detection_window_size = 8
     sorting_window_size = 32  # 2ms
 
-    MODEL_FILENAME_ACC = "./intracortical_weights/spike_sorting_kmeans_best_model_acc.pth"
-    MODEL_FILENAME_LOSS = "./intracortical_weights/spike_sorting_ae_best_model_loss.pth"
     DETECTION_IDX = "Intracortical_Spike_Detection_IDX.txt"
     RECONSTRUCTED_DIR = "./ae_reconstructed_plots/"
 
@@ -126,6 +116,11 @@ if __name__ == "__main__":
     for difficulty in ["Difficult1", "Difficult2", "Easy1", "Easy2"]:
         for noise_level in ["005", "01", "015", "02"]:
             filename = f"C_{difficulty}_noise{noise_level}.mat"
+
+            # MODEL_FILENAME_ACC = f"./intracortical_weights/spike_sorting_kmeans_{filename[:-4]}_best_model_acc.pth"
+            # MODEL_FILENAME_LOSS = f"./intracortical_weights/spike_sorting_ae_{filename[:-4]}_best_model_loss.pth"
+            MODEL_FILENAME_ACC = "./intracortical_weights/spike_sorting_kmeans_best_model_acc.pth"
+            MODEL_FILENAME_LOSS = "./intracortical_weights/spike_sorting_ae_best_model_loss.pth"
 
             current_file_recon_path = RECONSTRUCTED_DIR + filename[:-4] + "/"
             if not os.path.exists(current_file_recon_path):
@@ -228,8 +223,15 @@ if __name__ == "__main__":
 
             net = LSTMAutoencoder(
                 input_dim=1,
+                seq_len=training_spikes_tensor.shape[1],
                 hidden_size=args.hidden_dim,
+                latent_dim=args.latent_dim,
             )
+            # net = LinearAE(
+            #     input_dim=training_spikes_tensor.shape[1],  # This should match the input dimension of the spike train
+            #     hidden_dim=args.hidden_dim,
+            #     latent_dim=args.latent_dim,
+            # )
             net.to(DEVICE)
             net.load_state_dict(torch.load(MODEL_FILENAME_LOSS, map_location=DEVICE, weights_only=True))
             net.eval()
@@ -238,7 +240,7 @@ if __name__ == "__main__":
                 for i, (data, _) in tqdm(enumerate(train_loader), desc=f"Train split of file {filename}"):
                     data = data.to(DEVICE)
 
-                    latent_representation, reconstructed = net(data)
+                    latent_representation, reconstructed, _ = net(data)
 
                     fig, ax = plt.subplots(2, 1, figsize=(10, 6))
 
@@ -259,7 +261,7 @@ if __name__ == "__main__":
                 for j, (data, _) in tqdm(enumerate(test_loader), desc=f"Test split of file {filename}"):
                     data = data.to(DEVICE)
             
-                    latent_representation, reconstructed = net(data)
+                    latent_representation, reconstructed, _ = net(data)
             
                     fig, ax = plt.subplots(2, 1, figsize=(10, 6))
             
@@ -267,6 +269,11 @@ if __name__ == "__main__":
                     ax[1].stem(reconstructed[0].cpu().numpy(), linefmt='g-', markerfmt='go', basefmt='r-', label="Reconstructed")
                     ax[0].legend(loc="upper right")
                     ax[1].legend(loc="upper right")
+
+                    ax[0].minorticks_on()
+                    ax[0].grid(which="both", linestyle="--", linewidth=0.5, alpha=0.5, color="gray")
+                    ax[1].minorticks_on()
+                    ax[1].grid(which="both", linestyle="--", linewidth=0.5, alpha=0.5, color="gray")
             
                     plt.tight_layout()
                     plt.savefig(f"{current_file_recon_path}test_{j}.jpg", dpi=300)

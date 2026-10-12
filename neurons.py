@@ -1,11 +1,12 @@
-import torch
-import torch.nn as nn
-from snntorch.surrogate import atan
-import einops
+from typing import Union, tuple
 
-from typing import Tuple, Union
+import einops
+import torch
+from snntorch.surrogate import atan
+from torch import nn
 
 from BRF.grad_functions import StepDoubleGaussianGrad
+
 
 class DBRF(nn.Module):
     def __init__(
@@ -80,7 +81,7 @@ class DBRF(nn.Module):
         q: torch.Tensor,  # refractory period
         b: torch.Tensor,  # attraction to resting state
         omega: torch.Tensor,  # eigen ang. frequency of the neuron
-        dt: Union[float, torch.Tensor],
+        dt: Union[float, torch.Tensor],  # noqa: UP007
         select_t1_t2: torch.Tensor,
     ):
         
@@ -104,7 +105,7 @@ class DBRF(nn.Module):
     def forward(
         self, 
         x: torch.Tensor,
-        state: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]=None,
+        state: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]=None,  # noqa: RUF013
     ):
         if state is None:
             batch_size = x.shape[0]
@@ -205,7 +206,7 @@ class ABRF(nn.Module):
         q: torch.Tensor,  # refractory period
         b: torch.Tensor,  # attraction to resting state
         omega: torch.Tensor,  # eigen ang. frequency of the neuron
-        dt: Union[float, torch.Tensor],
+        dt: Union[float, torch.Tensor],  # noqa: UP007
     ):
         
         u_ = u + b * u * dt - omega * v * dt + x * dt
@@ -221,7 +222,7 @@ class ABRF(nn.Module):
     def forward(
         self, 
         x: torch.Tensor,
-        state: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]=None,
+        state: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]=None,  # noqa: RUF013
     ):
         if state is None:
             batch_size = x.shape[0]
@@ -364,7 +365,7 @@ class DTLIF(nn.Module):
         if mem is not None:
             self.mem = mem
 
-        if not self.mem.shape == x.shape:
+        if not self.mem.shape == x.shape:  # noqa: SIM201
             self.mem = torch.zeros_like(x, device=self.mem.device)
         
         self.reset = self.mem_reset(self.mem)
@@ -373,4 +374,102 @@ class DTLIF(nn.Module):
         spk = self.fire(self.mem)
 
         return spk, self.mem
+
+class LIFGradedSpikes(nn.Module):
+    def __init__(
+        self,
+        beta,
+        threshold,
+        learn_beta: bool=False,
+        learn_threshold: bool=False,
+        spike_grad=None,
+        reset_mechanism="subtract"
+    ):
+        super().__init__()
     
+        # Check if beta is a torch.Tensor, if not convert it to one
+        if not isinstance(beta, torch.Tensor):
+            beta = torch.as_tensor(beta, dtype=torch.float32)
+        # check if beta is learnable or not
+        if learn_beta:
+            self.beta = nn.Parameter(beta)
+        else:
+            self.register_buffer("beta", beta)
+    
+        # check if threshold is torch.Tensors, 
+        # if not convert to one
+        if not isinstance(threshold, torch.Tensor):
+            threshold = torch.as_tensor(threshold, dtype=torch.float32)
+        # check if threshold is learnable or not
+        if learn_threshold:
+            self.threshold = nn.Parameter(threshold)
+        else:
+            self.register_buffer("threshold", threshold)
+    
+        if reset_mechanism == "subtract":
+            self.state_function = self._base_sub
+        elif reset_mechanism == "zero":
+            self.state_function = self._base_zero
+        elif reset_mechanism == "none":
+            self.state_function = self._base_int
+        else:
+            raise ValueError("reset_mechanism must be one of 'subtract', 'zero', or 'none'")
+    
+        if spike_grad is None:
+            self.spike_grad = atan()
+        else:
+            self.spike_grad = spike_grad
+    
+        self._init_mem()
+    
+    def _init_mem(self):
+        mem = torch.zeros(0)
+        self.register_buffer("mem", mem, False)
+    
+    def reset_mem(self):
+        self.mem = torch.zeros_like(self.mem, device=self.mem.device)
+        return self.mem
+    
+    def mem_reset(self, mem):
+        mem_shift = mem - self.threshold
+        reset = self.spike_grad(mem_shift).clone().detach()
+    
+        return reset
+    
+    def fire(self, mem):
+        """Generates spike if mem > threshold.
+        Returns spk."""
+        mem_shift = torch.abs(mem) - self.threshold
+        spk = self.spike_grad(mem_shift)
+
+        spk = spk * torch.div(mem_shift, self.threshold, rounding_mode="floor") * torch.sign(mem)
+    
+        return spk
+    
+    def _base_state_function(self, input_):
+        base_fn = self.beta.clamp(0, 1) * self.mem + input_
+        return base_fn
+    
+    def _base_sub(self, input_):
+        return self._base_state_function(input_) - self.reset * self.threshold
+    
+    def _base_zero(self, input_):
+        self.mem = (1 - self.reset) * self.mem
+        return self._base_state_function(input_)
+    
+    def _base_int(self, input_):
+        return self._base_state_function(input_)
+    
+    def forward(self, x: torch.Tensor, mem=None):
+        if mem is not None:
+            self.mem = mem
+    
+        if not self.mem.shape == x.shape:  # noqa: SIM201
+            self.mem = torch.zeros_like(x, device=self.mem.device)
+    
+        self.reset = self.mem_reset(self.mem)
+        self.mem = self.state_function(x)
+    
+        spk = self.fire(self.mem)
+    
+        return spk, self.mem

@@ -1,11 +1,9 @@
 import numpy as np
-from scipy.io import loadmat
-from scipy.signal import ellip, lfilter, butter
-
 import torch
+from scipy.io import loadmat
+from scipy.signal import butter, ellip, lfilter
 from torch.utils.data import Dataset
 
-from typing import List, Tuple
 
 class IntracorticalDataset(Dataset):
     def __init__(self, spikes: torch.Tensor, labels: torch.Tensor, transform=None):
@@ -148,17 +146,8 @@ def load_dataset_intracortical(filepath: str, filename: str):
     return signal, spike_class_label, spike_times, sampling_interval, sampling_rate, spike_pulse_1ms_idx_length, spike_classes, filtered_signal
 
 def reconstruction_lif(lif_data, time_step=1e-3, reconstruct_tau=0.05, alpha=0.4, order=2):
-    step_total = lif_data.shape[0]
     u_rec = []
-    u = 0
 
-    # for step in range(step_total):
-    #     decay = alpha * math.exp(-(time_step/reconstruct_tau))
-    #     u_rec.append(u)
-    #     u = (u + lif_data[step]) * decay
-    
-    rp = 0.1
-    rs = 40
     cut_off_freq = 5000 # 5000 for intracortical. Try reducing this to make the reconstructed signal smoother.
     # A 2nd-order Butterworth filter has a relatively gentle roll-off. If high-frequency spike artifacts remain, you can increase the order:
     # to 4 or 6
@@ -218,31 +207,6 @@ def reconstruct_DDM(event_counts, spike_amplitude):
         reconstructed_signal[i] = current_value
     return reconstructed_signal
 
-def train_test_split_spike_sorting(
-    spike_classes, 
-    all_spk_trains, 
-    all_spike_signals, 
-    train_test_split_ratio
-):
-    train_spk_train, test_spk_train = [], []
-    train_signal, test_signal = [], []
-    train_label, test_label = [], []
-    for spike_class in spike_classes:
-        idx = np.arange(len(all_spk_trains[spike_class]))
-        np.random.shuffle(idx)
-        train_idx = idx[:int(train_test_split_ratio * len(idx))]
-        test_idx = idx[int(train_test_split_ratio * len(idx)):]
-        for i in train_idx:
-            train_spk_train.append(all_spk_trains[spike_class][i])
-            train_signal.append(all_spike_signals[spike_class][i])
-            train_label.append(spike_class)
-        for i in test_idx:
-            test_spk_train.append(all_spk_trains[spike_class][i])
-            test_signal.append(all_spike_signals[spike_class][i])
-            test_label.append(spike_class)
-
-    return train_spk_train, test_spk_train, train_signal, test_signal, train_label, test_label
-
 def train_test_split_spike_detection(
     spike_train,
     spike_times,
@@ -274,7 +238,7 @@ def create_training_dataset_spike_detection(
     spike_labels,
     spike_times,
     max_length=240,
-) -> Tuple[List[np.ndarray], List[np.ndarray]]:
+) -> tuple[list[np.ndarray], list[np.ndarray]]:
     spike_samples = []
     spike_samples_labels = []
     for i in range(spike_times.shape[0]):
@@ -335,3 +299,23 @@ def dv_to_lif_spike_gen(
         last_reset_voltage = signal[i]
 
     return np.array(u_hist), np.array(spk_hist), time_lif
+
+def weighted_huber_loss(pred, target, event_weight=10.0, zero_weight=1.0, delta=1.0):
+    # target and pred shape: [batch, time]
+
+    weights = torch.where(
+        target != 0,
+        torch.tensor(event_weight, device=target.device, dtype=target.dtype),
+        torch.tensor(zero_weight, device=target.device, dtype=target.dtype)
+    )
+
+    error = pred - target
+    abs_error = torch.abs(error)
+
+    huber = torch.where(
+        abs_error <= delta,
+        0.5 * error ** 2,
+        delta * (abs_error - 0.5 * delta)
+    )
+
+    return (weights * huber).mean()

@@ -1,14 +1,13 @@
+from typing import Optional, Union, list, tuple
+
+import snntorch as snn
 import torch
 import torch.nn as nn
-import snntorch as snn
-from snntorch.surrogate import atan
-from einops import repeat
-
 from DCLS.construct.modules import Dcls1d
+from einops import repeat
+from snntorch.surrogate import atan
 
-from neurons import ABRF, DBRF, DTLIF
-
-from typing import Tuple, Union, List, Optional
+from neurons import ABRF, DBRF, DTLIF, LIFGradedSpikes
 
 # from BRF.grad_functions import StepDoubleGaussianGrad
 
@@ -118,13 +117,13 @@ class LSTMCell(nn.Module):
         self.w_i = nn.Linear(input_dim, hidden_dim*4, bias=bias)
         self.w_h = nn.Linear(hidden_dim, hidden_dim*4, bias=bias)
 
-    def init_hidden(self, batch_size: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    def init_hidden(self, batch_size: int) -> tuple[torch.Tensor, torch.Tensor]:
         h_t = torch.zeros(batch_size, self.hidden_dim, device=self.w_i.weight.device)
         c_t = torch.zeros(batch_size, self.hidden_dim, device=self.w_i.weight.device)
 
         return h_t, c_t
 
-    def forward(self, x: torch.Tensor, h_t: torch.Tensor, c_t: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor, h_t: torch.Tensor, c_t: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         gates = self.w_i(x) + self.w_h(h_t)
 
         gate_i, gate_f, gate_g, gate_o = gates.chunk(4, dim=1)
@@ -138,21 +137,6 @@ class LSTMCell(nn.Module):
         h_t = o_t * torch.tanh(c_t)
 
         return h_t, c_t
-
-"""
-    Based on the paper: "Dilated convolution with learnable spacings"
-"""
-class DCLS1d(nn.Module):
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-
-    ):
-        super().__init__()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x
 
 """
     Based on the paper: Long Short-Term Memory Spiking Networks and Their Applications
@@ -192,13 +176,13 @@ class SpikingLSTMCell(nn.Module):
         self.w_i = nn.Linear(input_dim, hidden_dim*4, bias=bias)
         self.w_h = nn.Linear(hidden_dim, hidden_dim*4, bias=bias)
 
-    def init_hidden(self, batch_size: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    def init_hidden(self, batch_size: int) -> tuple[torch.Tensor, torch.Tensor]:
         h_t = torch.zeros(batch_size, self.hidden_dim, device=self.w_i.weight.device)
         c_t = torch.zeros(batch_size, self.hidden_dim, device=self.w_i.weight.device)
 
         return h_t, c_t
 
-    def forward(self, x: torch.Tensor, h_t: torch.Tensor, c_t: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor, h_t: torch.Tensor, c_t: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         gates = self.w_i(x) + self.w_h(h_t)
 
         gate_i, gate_f, gate_g, gate_o = gates.chunk(4, dim=1)
@@ -753,7 +737,7 @@ class LSTMAutoencoderOld(nn.Module):
         )
         self.fc_decoder = nn.Linear(hidden_size, input_dim)
 
-    def encode(self, x: torch.Tensor, h_t: torch.Tensor, c_t: torch.Tensor, seq_len: int) -> List[torch.Tensor]:
+    def encode(self, x: torch.Tensor, h_t: torch.Tensor, c_t: torch.Tensor, seq_len: int) -> list[torch.Tensor]:
         h_t_hist = []
         for i in range(seq_len):
             h_t, c_t = self.lstm_encoder(x[:, i].unsqueeze(-1), (h_t, c_t))
@@ -762,7 +746,7 @@ class LSTMAutoencoderOld(nn.Module):
 
         return h_t_hist
 
-    def decode(self, x: List[torch.Tensor], h_t: torch.Tensor, c_t: torch.Tensor, seq_len: int) -> torch.Tensor:
+    def decode(self, x: list[torch.Tensor], h_t: torch.Tensor, c_t: torch.Tensor, seq_len: int) -> torch.Tensor:
         # here x[i] is the hidden state from the encoder
         output = []
         for i in range(seq_len):
@@ -772,7 +756,7 @@ class LSTMAutoencoderOld(nn.Module):
 
         return torch.stack(output, dim=1).squeeze(-1)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         batch_size, seq_len = x.shape
 
         h_t_enc = torch.zeros(batch_size, self.hidden_size, device=x.device)        # for nn.LSTMCell
@@ -785,7 +769,7 @@ class LSTMAutoencoderOld(nn.Module):
 
         return h_t_encode_hist[-1], reconstructed # Shape: (batch_size, seq_len)
 
-class LSTMAutoencoder(nn.Module):
+class LSTMAutoencoderV2(nn.Module):
     def __init__(
         self,
         input_dim: int,
@@ -804,7 +788,6 @@ class LSTMAutoencoder(nn.Module):
             hidden_size=hidden_size,
             num_layers=1,
             batch_first=True,
-            dropout=0.1
         )
         self.to_latent = nn.Linear(2 * hidden_size, latent_dim)
 
@@ -815,12 +798,11 @@ class LSTMAutoencoder(nn.Module):
             hidden_size=hidden_size,
             num_layers=1,
             batch_first=True,
-            dropout=0.1
         )
         self.fc_decoder = nn.Linear(hidden_size, input_dim)
 
     def encode(self, x: torch.Tensor) -> list[torch.Tensor]:
-        _, (h, c) = self.encoder(x)                        # h, c: (L, B, H)
+        _, (h, c) = self.lstm_encoder(x)                        # h, c: (L, B, H)
         z = self.to_latent(torch.cat([h[-1], c[-1]], -1))  # (B, latent_dim)
 
         return z
@@ -838,16 +820,16 @@ class LSTMAutoencoder(nn.Module):
         if teacher_forcing:
             # input at step t = target at step t-1, first input = zeros
             dec_in = torch.cat([torch.zeros(B, 1, D, device=x.device), target[:, :-1]], dim=1)
-            out, _ = self.decoder(dec_in, (h0, c0))
+            out, _ = self.lstm_decoder(dec_in, (h0, c0))
 
-            return self.fc_out(out), target
+            return torch.flip(self.fc_decoder(out), dims=[1]), target
         else:
             # autoregressive (use at eval or with scheduled sampling)
             inp = torch.zeros(B, 1, D, device=x.device)
             state, outs = (h0, c0), []
             for _ in range(T):
-                o, state = self.decoder(inp, state)
-                inp = self.fc_out(o)
+                o, state = self.lstm_decoder(inp, state)
+                inp = self.fc_decoder(o)
                 outs.append(inp)
 
             return torch.cat(outs, 1), target
@@ -859,7 +841,88 @@ class LSTMAutoencoder(nn.Module):
         z = self.encode(x)
         recon, target = self.decode(z, x, teacher_forcing)
 
-        return z, recon, target
+        return z, recon.squeeze(-1), target
+
+class LSTMAutoencoder(nn.Module):
+    def __init__(
+        self,
+        input_dim: int,
+        seq_len: int,
+        hidden_size: int,
+        latent_dim: int
+    ):
+        super().__init__()
+
+        self.input_dim = input_dim
+        self.hidden_size = hidden_size
+        self.latent_dim = latent_dim
+        self.seq_len = seq_len
+
+        # encoder
+        self.lstm_encoder = nn.LSTM(
+            input_size=input_dim, 
+            hidden_size=hidden_size,
+            num_layers=1,
+            batch_first=True,
+        )
+        self.to_latent = nn.Linear(2 * hidden_size, latent_dim)
+
+        # decoder
+        self.from_latent = nn.Linear(latent_dim, 2 * hidden_size)
+        self.relu = nn.ReLU()
+        self.fc_decoder = nn.Linear(2 * hidden_size, seq_len)
+
+    def encode(self, x: torch.Tensor) -> list[torch.Tensor]:
+        _, (h, c) = self.lstm_encoder(x)                        # h, c: (L, B, H)
+        z = self.to_latent(torch.cat([h[-1], c[-1]], -1))  # (B, latent_dim)
+        # z = self.to_latent(h[-1])  # (B, latent_dim)
+
+        return z
+
+    def decode(self, z: torch.Tensor) -> torch.Tensor:
+        out1 = self.from_latent(z)
+        out2 = self.fc_decoder(self.relu(out1))
+
+        return out2
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        if x.dim() == 2:
+            x = x.unsqueeze(-1) # (B, T) -> (B, T, 1)
+
+        z = self.encode(x)
+        recon = self.decode(z)
+
+        return z, recon.squeeze(-1), x
+
+class LinearAE(nn.Module):
+    def __init__(
+        self,
+        input_dim,
+        hidden_dim=64,
+        latent_dim=3,
+    ):
+        super().__init__()
+
+        self.input_dim = input_dim # this is the sequence length
+        self.hidden_dim = hidden_dim
+        self.latent_dim = latent_dim
+
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, latent_dim),
+        )
+        self.decoder = nn.Sequential(
+            nn.Linear(latent_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, input_dim),
+        )
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        z = self.encoder(x)
+        x_reconstructed = self.decoder(z)
+
+        return z, x_reconstructed, x
 
 class KMeansHead(nn.Module):
     def __init__(

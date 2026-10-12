@@ -14,13 +14,14 @@ from sklearn.cluster import KMeans
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from model import KMeansHead, LSTMAutoencoder
+from model import KMeansHead, LinearAE, LSTMAutoencoder
 from utils import (
     IntracorticalDataset,
     dv_to_lif_spike_gen,
     generate_event_stream_dm,
     load_dataset_intracortical,
     train_test_split_spike_sorting,
+    weighted_huber_loss,
 )
 
 
@@ -42,7 +43,10 @@ def train_ae(
 
             latent_representation, reconstructed, _ = net(data)
 
-            loss = loss_fn(reconstructed, data)
+            if loss_fn.__name__ == "weighted_huber_loss":
+                loss = loss_fn(reconstructed, data, event_weight=10.0, zero_weight=1.0, delta=1.0)
+            else:
+                loss = loss_fn(reconstructed, data)
             curr_loss += loss.item()
 
             optimiser.zero_grad()
@@ -56,9 +60,6 @@ def train_ae(
         if curr_loss < best_loss:
             torch.save(net.state_dict(), MODEL_FILENAME_LOSS)
             best_loss = curr_loss
-        # torch.save(net.state_dict(), MODEL_FILENAME)
-
-        # test(test_net, test_loader, acc_fn)
 
         if scheduler is not None:
             scheduler.step()
@@ -90,7 +91,10 @@ def train_kmeans(
             
             clustering_loss, _ = net(latent_representation)
 
-            reconstruction_loss = loss_fn(reconstructed, data)
+            if loss_fn.__name__ == "weighted_huber_loss":
+                reconstruction_loss = loss_fn(reconstructed, data, event_weight=10.0, zero_weight=1.0, delta=1.0)
+            else:
+                reconstruction_loss = loss_fn(reconstructed, data)
             loss = clustering_loss_weight * clustering_loss
 
             curr_loss += loss.item()
@@ -146,7 +150,10 @@ def test_kmeans(
             predictions.append(assignments.cpu().numpy())
             labels.append(label.cpu().numpy())
 
-            loss = loss_fn(reconstructed, data)
+            if loss_fn.__name__ == "weighted_huber_loss":
+                loss = loss_fn(reconstructed, data, event_weight=10.0, zero_weight=1.0, delta=1.0)
+            else:
+                loss = loss_fn(reconstructed, data)
             total_loss += loss.item()
 
     counts = np.zeros((n_clusters, n_classes), dtype=np.int64)
@@ -174,20 +181,25 @@ def test_ae(
     net.eval()
 
     total_loss = 0.0
+    total_samples = 0
     with torch.no_grad():
         for data, label in test_loader:
             data = data.to(DEVICE)
             label = label.to(DEVICE)
 
-            latent_representation, reconstructed = net(data)
+            latent_representation, reconstructed, _ = net(data)
 
-            loss = loss_fn(reconstructed, data)
+            if loss_fn.__name__ == "weighted_huber_loss":
+                loss = loss_fn(reconstructed, data, event_weight=10.0, zero_weight=1.0, delta=1.0)
+            else:
+                loss = loss_fn(reconstructed, data)
             total_loss += loss.item()
+            total_samples += data.shape[0]
 
     if final_test:
         # tqdm.write(f"Final Test Accuracy: {test_acc:.4f}")
         with open(TRAINING_LOG_NAME, "a") as f:
-            f.write(f"\t\tFinal Test Loss: {total_loss:.4f}\n")
+            f.write(f"\t\tFinal Average Test Loss: {total_loss/total_samples:.4f}\n")
 
 if __name__ == "__main__":
     """
@@ -208,7 +220,7 @@ if __name__ == "__main__":
         "--acc_mode",
         type=str,
         default="mse",
-        choices=["mse", "mae"],
+        choices=["mse", "mae", "huber"],
         help="Accuracy mode for training and testing",
     )
     parser.add_argument(
@@ -229,11 +241,17 @@ if __name__ == "__main__":
         default=16,
         help="Latent dimension for the autoencoder",
     )
+    parser.add_argument(
+        "--encoder_th",
+        type=float,
+        default=0.1,
+        help="Encoder threshold for the DM or DV encoder",
+    )
 
     args = parser.parse_args()
 
     BATCH_SIZE = 256  # 128 or 64
-    NUM_EPOCHS = 20  # 60 epochs seems to work for lstm + lif model. slstm + lif seems to need more epochs.
+    NUM_EPOCHS = 500  # 60 epochs seems to work for lstm + lif model. slstm + lif seems to need more epochs.
 
     TRAINING_LOG_PATH = "./spike_sorting_training_log"
     if not os.path.exists(TRAINING_LOG_PATH):
@@ -258,7 +276,7 @@ if __name__ == "__main__":
     encoder = "dm"  # "dm" or "dv"
     reset_mechanism = "subtract"  # "none", "subtract", "zero"
     train_test_split_ratio = 0.7  # 70% training, 30% testing
-    encoder_threshold = 0.2
+    encoder_threshold = args.encoder_th
     lif_tau = 1 * (1 / 24000)
     detection_window_size = 8
     sorting_window_size = 32  # 2ms
@@ -409,9 +427,15 @@ if __name__ == "__main__":
     if args.model_type == "ae":
         net = LSTMAutoencoder(
             input_dim=1,
+            seq_len=complete_train_data.shape[1],
             hidden_size=args.hidden_dim,
             latent_dim=args.latent_dim,
         )
+        # net = LinearAE(
+        #     input_dim=training_spikes_tensor.shape[1],  # This should match the input dimension of the spike train
+        #     hidden_dim=args.hidden_dim,
+        #     latent_dim=args.latent_dim,
+        # )
         net.to(DEVICE)
         test_net = copy.deepcopy(net)
 
@@ -421,6 +445,7 @@ if __name__ == "__main__":
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimiser, T_max=NUM_EPOCHS, eta_min=1e-6
         )
+        # scheduler = None
     elif args.model_type == "kmeans":
         ae = LSTMAutoencoder(
             input_dim=1,
@@ -473,6 +498,8 @@ if __name__ == "__main__":
         loss_fn = nn.MSELoss()
     elif args.acc_mode == "mae":
         loss_fn = nn.L1Loss()
+    elif args.acc_mode == "huber":
+        loss_fn = weighted_huber_loss
 
     if not args.test_only:
         if args.model_type == "ae":
