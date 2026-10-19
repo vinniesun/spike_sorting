@@ -1,4 +1,4 @@
-from typing import Optional, Union, list, tuple
+from typing import Optional, Union, List, Tuple
 
 import snntorch as snn
 import torch
@@ -135,6 +135,59 @@ class LSTMCell(nn.Module):
 
         c_t = f_t * c_t + i_t * g_t
         h_t = o_t * torch.tanh(c_t)
+
+        return h_t, c_t
+
+class Conv1DLSTMCell(nn.Module):
+    def __init__(
+        self,
+        seq_len: int,
+        input_dim: int,
+        hidden_dim: int,
+        kernel_size: int,
+        kernel_stride: int,
+        padding: int=0,
+    ):
+        super().__init__()
+
+        self.seq_len = seq_len
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.kernel_size = kernel_size
+        self.kernel_stride = kernel_stride
+        self.padding = padding
+
+        self.weights = nn.Conv1d(
+            in_channels=input_dim+hidden_dim,
+            out_channels=hidden_dim*4,
+            kernel_size=kernel_size,
+            stride=kernel_stride,
+            padding=padding,
+        )
+
+    def _init_hidden(self, batch_size: int, init_random: bool=True):
+        if init_random:
+            return (torch.randn(batch_size, self.hidden_dim, self.seq_len, device=self.w.weight.device),
+                    torch.randn(batch_size, self.hidden_dim, self.seq_len, device=self.w.weight.device))
+        else:
+            return (torch.zeros(batch_size, self.hidden_dim, self.seq_len, device=self.w.weight.device),
+                    torch.zeros(batch_size, self.hidden_dim, self.seq_len, device=self.w.weight.device))
+
+    def forward(self, x: torch.Tensor, curr_states: tuple[torch.Tensor, torch.Tensor]):
+        h_t, c_t = curr_states
+
+        combined_input = torch.cat((x, h_t), dim=1)
+        conv_out = self.weights(combined_input)
+
+        x_i, x_f, x_g, x_o = torch.split(conv_out, self.hidden_dim, dim=1)
+
+        i = torch.sigmoid(x_i)
+        f = torch.sigmoid(x_f)
+        g = torch.tanh(x_g)
+        o = torch.sigmoid(x_o)
+
+        c_t = f*c_t + i*g
+        h_t = o*torch.tanh(c_t)
 
         return h_t, c_t
 
@@ -923,6 +976,218 @@ class LinearAE(nn.Module):
         x_reconstructed = self.decoder(z)
 
         return z, x_reconstructed, x
+
+class Conv1DAE(nn.Module):
+    def __init__(
+        self,
+        input_dim: int,
+        seq_len: int,
+        hidden_size: tuple[int, int, int],
+        latent_dim: int
+    ):
+        super().__init__()
+
+        self.encoder = nn.Sequential(
+            nn.Conv1d(in_channels=input_dim, out_channels=hidden_size[0], kernel_size=6, stride=2, padding=1), # output (bs, hidden_size[0], 15)
+            nn.ReLU(),
+            nn.Conv1d(in_channels=hidden_size[0], out_channels=hidden_size[1], kernel_size=6, stride=2, padding=1), # output (bs, hidden_size[0], 6)
+            nn.ReLU(),
+            nn.Conv1d(in_channels=hidden_size[1], out_channels=hidden_size[2], kernel_size=6, stride=2, padding=1), # output (bs, hidden_size[0], 2)
+            nn.ReLU(),
+            nn.Flatten(start_dim=1, end_dim=-1),
+            nn.Linear(hidden_size[2] * 2, latent_dim),
+        )
+
+        self.decoder = nn.Sequential(
+            nn.Linear(latent_dim, hidden_size[2] * 2),
+            nn.ReLU(),
+            nn.Unflatten(dim=1, unflattened_size=(hidden_size[2], 2)),
+            nn.ConvTranspose1d(in_channels=hidden_size[2], out_channels=hidden_size[1], kernel_size=6, stride=2, padding=1),
+            nn.ReLU(),
+            nn.ConvTranspose1d(in_channels=hidden_size[1], out_channels=hidden_size[0], kernel_size=6, stride=2, padding=1),
+            nn.ReLU(),
+            nn.ConvTranspose1d(in_channels=hidden_size[0], out_channels=input_dim, kernel_size=6, stride=2, padding=0),
+        )
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if x.ndim == 2:
+            x = x.unsqueeze(1) # (B, T) -> (B, 1, T)
+        z = self.encoder(x)
+        x_reconstructed = self.decoder(z)
+
+        return z, x_reconstructed.squeeze(1), x
+
+class Conv1DLSTMAE(nn.Module):
+    def __init__(
+        self,
+        seq_len: int,
+        input_dim: int,
+        out_channels: int,
+        hidden_dim: int,
+        latent_dim: int,
+        kernel_size: int,
+        kernel_stride: int,
+        padding: int=0,
+    ):
+        super().__init__()
+
+        self.seq_len = seq_len
+        self.input_dim = input_dim
+        self.out_channels = out_channels
+        self.hidden_dim = hidden_dim
+        self.latent_dim = latent_dim
+        self.kernel_size = kernel_size
+        self.kernel_stride = kernel_stride
+        self.padding = padding
+
+        # encoder
+        self.conv1 = nn.Conv1d(
+            in_channels=input_dim,
+            out_channels=out_channels,
+            kernel_size=kernel_size,
+            stride=kernel_stride,
+            padding=padding
+        )
+        self.relu = nn.ReLU()
+        self.lstm_encoder = nn.LSTM(
+            input_size=out_channels,
+            hidden_size=hidden_dim,
+            num_layers=1,
+            batch_first=True
+        )
+        self.to_latent = nn.Linear(hidden_dim, latent_dim)
+
+        # decoder
+        self.from_latent = nn.Linear(latent_dim, hidden_dim)
+        self.decoder_ht = nn.Linear(hidden_dim, hidden_dim)
+        self.decoder_ct = nn.Linear(hidden_dim, hidden_dim)
+        self.lstm_decoder = nn.LSTMCell(
+            input_size=input_dim + latent_dim,
+            hidden_size=hidden_dim,
+        )
+        self.to_output = nn.Linear(hidden_dim, input_dim)
+
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.relu(self.conv1(x))
+
+        x = x.permute(0, 2, 1) # (B, C, T) -> (B, T, C)
+        _, (h, c) = self.lstm_encoder(x) # h/c shape: (1, b, hidden_dim)
+        h = h.squeeze(0) # shape: (b, hidden_dim)
+
+        out = self.to_latent(h)
+
+        return out
+
+    def decode(
+        self, 
+        x: torch.Tensor,
+    ) -> torch.Tensor:
+        # might implement teacher forcing in the future, but for now just use autoregressive decoding
+        latent_p = self.from_latent(x)
+
+        h_t = self.decoder_ht(latent_p)
+        c_t = self.decoder_ct(latent_p)
+
+        prev_y = torch.zeros(x.shape[0], self.input_dim, device=x.device)
+
+        outputs = []
+        for i in range(self.seq_len):
+            decoder_input = torch.cat([prev_y, x], dim=1) # (batch_size, hidden_dim + latent_dim)
+            h_t, c_t = self.lstm_decoder(decoder_input, (h_t, c_t))
+
+            out = self.to_output(h_t) # (batch_size, input_dim)
+            outputs.append(out)
+            prev_y = out
+
+        outputs = torch.stack(outputs, dim=1).permute(0, 2, 1) # (batch_size, input_dim, seq_len)
+
+        return outputs
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if x.ndim == 2:
+            x = x.unsqueeze(1) # (B, T) -> (B, 1, T)
+        z = self.encode(x)
+        x_reconstructed = self.decode(z)
+
+        return z, x_reconstructed.squeeze(1), x
+
+class ClusterAssignment(nn.Module):
+    def __init__(
+        self,
+        num_clusters: int,
+        embedding_dim: int,
+        alpha: float=1.0,
+        init_centroids: Optional[torch.Tensor]=None  # noqa: UP045
+    ):
+        """
+        Module to handle the soft assignment, for a description see in 3.1.1. in Xie/Girshick/Farhadi,
+        where the Student's t-distribution is used measure similarity between feature vector and each
+        cluster centroid.
+
+        :param num_clusters: number of clusters
+        :param embedding_dim: embedding dimension of feature vectors
+        :param alpha: parameter representing the degrees of freedom in the t-distribution, default 1.0
+        :param init_centroids: initial cluster centers to use, if None then use Xavier uniform
+        """
+        super().__init__()
+
+        self.num_clusters = num_clusters
+        self.embedding_dim = embedding_dim
+        self.alpha = alpha
+
+        if init_centroids is None:
+            init_centroids = torch.zeros(
+                self.num_clusters, self.embedding_dim, dtype=torch.float32
+            )
+            nn.init.xavier_uniform_(init_centroids)
+        self.centroids = nn.Parameter(init_centroids)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Compute the soft assignment for a batch of feature vectors, returning a batch of assignments
+        for each cluster.
+
+        :param batch: FloatTensor of [batch size, embedding dimension]
+        :return: FloatTensor [batch size, number of clusters]
+        """
+        norm_squared = torch.sum( (x.unsqueeze(1) - self.centroids) ** 2, dim=2)
+        numerator = 1.0 / (1.0 + (norm_squared / self.alpha))
+        power = float(self.alpha + 1) / 2
+        numerator = numerator ** power
+
+        return numerator / torch.sum(numerator, dim=1, keepdim=True)
+
+class DEC(nn.Module):
+    def __init__(
+        self,
+        num_clusters: int,
+        hidden_dim: int,
+        alpha: float=1.0,
+        initial_centroids: Optional[torch.Tensor]=None  # noqa: UP045
+    ):
+        """
+        Module which holds all the moving parts of the DEC algorithm, as described in
+        Xie/Girshick/Farhadi; this includes the AutoEncoder stage and the ClusterAssignment stage.
+
+        :param num_clusters: number of clusters
+        :param hidden_dim: hidden dimension, output of the encoder
+        :param alpha: parameter representing the degrees of freedom in the t-distribution, default 1.0
+        """
+        super().__init__()
+
+        self.num_clusters = num_clusters
+        self.hidden_dim = hidden_dim
+        self.alpha = alpha
+
+        self.assignment = ClusterAssignment(
+            num_clusters=self.num_clusters,
+            embedding_dim=self.hidden_dim,
+            alpha=self.alpha,
+            init_centroids=initial_centroids
+        )
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.assignment(x)
 
 class KMeansHead(nn.Module):
     def __init__(

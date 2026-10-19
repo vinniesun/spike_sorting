@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+import torch.nn.functional as F
 from scipy.io import loadmat
 from scipy.signal import butter, ellip, lfilter
 from torch.utils.data import Dataset
@@ -319,3 +320,47 @@ def weighted_huber_loss(pred, target, event_weight=10.0, zero_weight=1.0, delta=
     )
 
     return (weights * huber).mean()
+
+def exp_filter(spikes: torch.Tensor, tau: float, dt: float = 1.0) -> torch.Tensor:
+    """
+    Convolve spike trains with a causal exponential kernel.
+    spikes: (B, T)  ->  returns (B, T)
+    """
+    B, T = spikes.shape
+    t = torch.arange(T, device=spikes.device, dtype=spikes.dtype) * dt
+    kernel = torch.exp(-t / tau).flip(0).view(1, 1, T)        # (1,1,T), causal
+    x = spikes.unsqueeze(1)                                     # (B,1,T)
+    x = F.pad(x, (T - 1, 0))                                    # left pad -> causal
+
+    return F.conv1d(x, kernel).squeeze(1)                       # (B,T)
+
+def van_rossum_distance(a: torch.Tensor, b: torch.Tensor,
+                        tau: float, dt: float = 1.0) -> torch.Tensor:
+    """
+    Element-wise van Rossum distance between a[i] and b[i].
+    a, b: (B, T)  ->  returns (B,)
+    """
+    fa = exp_filter(a, tau, dt)
+    fb = exp_filter(b, tau, dt)
+    d2 = ((fa - fb) ** 2).sum(dim=-1) * dt / tau
+
+    return torch.sqrt(d2.clamp_min(0)).mean()
+
+def huber_vr(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    event_weight: float = 10.0,
+    zero_weight: float = 1.0,
+    delta: float = 1.0,
+    tau: float = 5.0,
+    dt: float = 1.0,
+    alpha: float = 1.0,
+    beta: float = 0.5,
+) -> torch.Tensor:
+    """
+    Combined loss function of weighted Huber loss and van Rossum distance.
+    """
+    huber_loss = weighted_huber_loss(pred, target, event_weight, zero_weight, delta)
+    vr_distance = van_rossum_distance(pred, target, tau, dt)
+
+    return alpha * huber_loss + beta * vr_distance.mean()

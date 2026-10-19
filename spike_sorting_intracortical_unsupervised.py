@@ -14,13 +14,15 @@ from sklearn.cluster import KMeans
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from model import KMeansHead, LinearAE, LSTMAutoencoder
+from model import *
 from utils import (
     IntracorticalDataset,
     dv_to_lif_spike_gen,
     generate_event_stream_dm,
+    huber_vr,
     load_dataset_intracortical,
     train_test_split_spike_sorting,
+    van_rossum_distance,
     weighted_huber_loss,
 )
 
@@ -30,6 +32,7 @@ def train_ae(
     train_loader,
     optimiser,
     loss_fn,
+    args,
     scheduler=None,
 ):
     best_loss = float("inf")
@@ -43,8 +46,12 @@ def train_ae(
 
             latent_representation, reconstructed, _ = net(data)
 
-            if loss_fn.__name__ == "weighted_huber_loss":
+            if args.acc_mode == "huber":
                 loss = loss_fn(reconstructed, data, event_weight=10.0, zero_weight=1.0, delta=1.0)
+            elif args.acc_mode == "vr":
+                loss = loss_fn(reconstructed, data, tau=1e-5) # tau of 10us
+            elif args.acc_mode == "huber_vr":
+                loss = loss_fn(reconstructed, data, event_weight=10.0, zero_weight=1.0, delta=1.0, tau=1e-5)
             else:
                 loss = loss_fn(reconstructed, data)
             curr_loss += loss.item()
@@ -70,6 +77,7 @@ def train_kmeans(
     train_loader,
     optimiser,
     loss_fn,
+    args,
     scheduler=None,
 ):
     best_recon_loss = float("inf")
@@ -91,10 +99,15 @@ def train_kmeans(
             
             clustering_loss, _ = net(latent_representation)
 
-            if loss_fn.__name__ == "weighted_huber_loss":
+            if args.acc_mode == "huber":
                 reconstruction_loss = loss_fn(reconstructed, data, event_weight=10.0, zero_weight=1.0, delta=1.0)
+            elif args.acc_mode == "vr":
+                reconstruction_loss = loss_fn(reconstructed, data, tau=1e-5) # tau of 10us
+            elif args.acc_mode == "huber_vr":
+                reconstruction_loss = loss_fn(reconstructed, data, event_weight=10.0, zero_weight=1.0, delta=1.0, tau=1e-5)
             else:
                 reconstruction_loss = loss_fn(reconstructed, data)
+
             loss = clustering_loss_weight * clustering_loss
 
             curr_loss += loss.item()
@@ -119,13 +132,14 @@ def train_kmeans(
         if scheduler is not None:
             scheduler.step()
 
-def test_kmeans(
+def test_clustering(
     test_ae_net,
     net,
     test_loader,
     loss_fn,
     n_clusters,
     n_classes,
+    args,
     final_test: bool = False,
 ):
     test_ae_net.load_state_dict(torch.load(MODEL_FILENAME_LOSS, weights_only=True))
@@ -150,8 +164,12 @@ def test_kmeans(
             predictions.append(assignments.cpu().numpy())
             labels.append(label.cpu().numpy())
 
-            if loss_fn.__name__ == "weighted_huber_loss":
+            if args.acc_mode == "huber":
                 loss = loss_fn(reconstructed, data, event_weight=10.0, zero_weight=1.0, delta=1.0)
+            elif args.acc_mode == "vr":
+                loss = loss_fn(reconstructed, data, tau=1e-5) # tau of 10us
+            elif args.acc_mode == "huber_vr":
+                loss = loss_fn(reconstructed, data, event_weight=10.0, zero_weight=1.0, delta=1.0, tau=1e-5)
             else:
                 loss = loss_fn(reconstructed, data)
             total_loss += loss.item()
@@ -174,6 +192,7 @@ def test_ae(
     net,
     test_loader,
     loss_fn,
+    args,
     final_test: bool = False,
 ):
     net.load_state_dict(torch.load(MODEL_FILENAME_LOSS, weights_only=True))
@@ -189,8 +208,12 @@ def test_ae(
 
             latent_representation, reconstructed, _ = net(data)
 
-            if loss_fn.__name__ == "weighted_huber_loss":
+            if args.acc_mode == "huber":
                 loss = loss_fn(reconstructed, data, event_weight=10.0, zero_weight=1.0, delta=1.0)
+            elif args.acc_mode == "vr":
+                loss = loss_fn(reconstructed, data, tau=1e-5) # tau of 10us
+            elif args.acc_mode == "huber_vr":
+                loss = loss_fn(reconstructed, data, event_weight=10.0, zero_weight=1.0, delta=1.0, tau=1e-5)
             else:
                 loss = loss_fn(reconstructed, data)
             total_loss += loss.item()
@@ -213,14 +236,14 @@ if __name__ == "__main__":
         "--model_type",
         type=str,
         default="ae",
-        choices=["ae", "kmeans"],
+        choices=["ae", "clustering"],
         help="Model used for spike sorting",
     )
     parser.add_argument(
         "--acc_mode",
         type=str,
         default="mse",
-        choices=["mse", "mae", "huber"],
+        choices=["mse", "mae", "huber", "vr", "huber_vr"],
         help="Accuracy mode for training and testing",
     )
     parser.add_argument(
@@ -425,12 +448,18 @@ if __name__ == "__main__":
     )
 
     if args.model_type == "ae":
-        net = LSTMAutoencoder(
+        net = Conv1DAE(
             input_dim=1,
             seq_len=complete_train_data.shape[1],
-            hidden_size=args.hidden_dim,
+            hidden_size=(16, 32, 64),
             latent_dim=args.latent_dim,
         )
+        # net = LSTMAutoencoder(
+        #     input_dim=1,
+        #     seq_len=complete_train_data.shape[1],
+        #     hidden_size=args.hidden_dim,
+        #     latent_dim=args.latent_dim,
+        # )
         # net = LinearAE(
         #     input_dim=training_spikes_tensor.shape[1],  # This should match the input dimension of the spike train
         #     hidden_dim=args.hidden_dim,
@@ -442,11 +471,11 @@ if __name__ == "__main__":
         optimiser = torch.optim.AdamW(
             net.parameters(), lr=2e-3, betas=(0.9, 0.999), weight_decay=0.1
         )
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimiser, T_max=NUM_EPOCHS, eta_min=1e-6
-        )
-        # scheduler = None
-    elif args.model_type == "kmeans":
+        # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        #     optimiser, T_max=NUM_EPOCHS, eta_min=1e-6
+        # )
+        scheduler = None
+    elif args.model_type == "clustering":
         ae = LSTMAutoencoder(
             input_dim=1,
             hidden_size=args.hidden_dim,
@@ -500,6 +529,10 @@ if __name__ == "__main__":
         loss_fn = nn.L1Loss()
     elif args.acc_mode == "huber":
         loss_fn = weighted_huber_loss
+    elif args.acc_mode == "vr":
+        loss_fn = van_rossum_distance
+    elif args.acc_mode == "huber_vr":
+        loss_fn = huber_vr
 
     if not args.test_only:
         if args.model_type == "ae":
@@ -508,15 +541,17 @@ if __name__ == "__main__":
                 train_loader,
                 optimiser,
                 loss_fn,
+                args,
                 scheduler=scheduler,
             )  # acc_mode="temporal" or "count"
-        elif args.model_type == "kmeans":
+        elif args.model_type == "clustering":
             train_kmeans(
                 ae,
                 net,
                 train_loader,
                 optimiser,
                 loss_fn,
+                args,
                 scheduler=scheduler,
             )
 
@@ -535,9 +570,9 @@ if __name__ == "__main__":
                 f.write(f"Currently Testing: {filename}\n\n")
 
             if args.model_type == "ae":
-                test_ae(test_net, test_loader, loss_fn=loss_fn, final_test=True)
-            elif args.model_type == "kmeans":
-                test_kmeans(test_ae_net, test_net, test_loader, loss_fn=loss_fn, n_clusters=len(spike_classes), n_classes=len(spike_classes), final_test=True)
+                test_ae(test_net, test_loader, loss_fn=loss_fn, args=args, final_test=True)
+            elif args.model_type == "clustering":
+                test_clustering(test_ae_net, test_net, test_loader, loss_fn=loss_fn, n_clusters=len(spike_classes), n_classes=len(spike_classes), args=args, final_test=True)
 
             with open(TRAINING_LOG_NAME, "a") as f:
                 f.write("\n")

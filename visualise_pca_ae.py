@@ -14,7 +14,7 @@ from sklearn.cluster import KMeans
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from model import KMeansHead, LSTMAutoencoder
+from model import *
 from utils import (
     IntracorticalDataset,
     dv_to_lif_spike_gen,
@@ -35,7 +35,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--visualise",
         type=str,
-        default="pcm",
+        default="ae",
         choices=["pcm", "ae"],
         help="Model used for spike sorting",
     )
@@ -50,6 +50,19 @@ if __name__ == "__main__":
         type=int,
         default=16,
         help="Latent dimension for the autoencoder",
+    )
+    parser.add_argument(
+        "--encoder_th",
+        type=float,
+        default=0.1,
+        help="Encoder threshold for the DM or DV encoder",
+    )
+    parser.add_argument(
+        "--encoder",
+        type=str,
+        default="dm",
+        choices=["dm", "dv"],
+        help="Encoder type for the DM or DV encoder",
     )
 
     args = parser.parse_args()
@@ -73,10 +86,10 @@ if __name__ == "__main__":
 
     filepath = "./intracortical_dataset/"
 
-    encoder = "dm"  # "dm" or "dv"
+    encoder = args.encoder  # "dm" or "dv"
     reset_mechanism = "subtract"  # "none", "subtract", "zero"
     train_test_split_ratio = 0.7  # 70% training, 30% testing
-    encoder_threshold = 0.2
+    encoder_threshold = args.encoder_th
     lif_tau = 1 * (1 / 24000)
     detection_window_size = 8
     sorting_window_size = 32  # 2ms
@@ -118,7 +131,7 @@ if __name__ == "__main__":
         complete_test_data,
         complete_test_labels,
     ) = [], [], {}, {}
-    for difficulty in ["Difficult1", "Difficult2", "Easy1", "Easy2"]:
+    for difficulty in tqdm(["Difficult1", "Difficult2", "Easy1", "Easy2"]):
         for noise_level in ["005", "01", "015", "02"]:
             filename = f"C_{difficulty}_noise{noise_level}.mat"
 
@@ -228,12 +241,28 @@ if __name__ == "__main__":
             elif args.visualise == "ae":
                 inputs_for_pca = []
                 labels_for_pca = []
-                net = LSTMAutoencoder(
-                    input_dim=1,
+                # net = LSTMAutoencoder(
+                #     input_dim=1,
+                #     seq_len=training_spikes_tensor.shape[1],
+                #     hidden_size=args.hidden_dim,
+                #     latent_dim=args.latent_dim,
+                # )
+                net = Conv1DLSTMAE(
                     seq_len=training_spikes_tensor.shape[1],
-                    hidden_size=args.hidden_dim,
+                    input_dim=1,
+                    out_channels=16,
+                    hidden_dim=args.hidden_dim,
                     latent_dim=args.latent_dim,
+                    kernel_size=4,
+                    kernel_stride=2,
+                    padding=1,
                 )
+                # net = Conv1DAE(
+                #     input_dim=1,
+                #     seq_len=training_spikes_tensor.shape[1],
+                #     hidden_size=(32, 64, 96),
+                #     latent_dim=args.latent_dim,
+                # )
                 net.to(DEVICE)
                 net.load_state_dict(torch.load(MODEL_FILENAME_LOSS, map_location=DEVICE, weights_only=True))
                 net.eval()

@@ -1,4 +1,4 @@
-from typing import Union, tuple
+from typing import Union, Tuple
 
 import einops
 import torch
@@ -442,7 +442,8 @@ class LIFGradedSpikes(nn.Module):
         mem_shift = torch.abs(mem) - self.threshold
         spk = self.spike_grad(mem_shift)
 
-        spk = spk * torch.div(mem_shift, self.threshold, rounding_mode="floor") * torch.sign(mem)
+        # spk = spk * torch.div(mem_shift, self.threshold, rounding_mode="floor") * torch.sign(mem) # (U - U_th) / U_th
+        spk = spk * torch.div(mem, self.threshold, rounding_mode="floor") * torch.sign(mem) # U / U_th
     
         return spk
     
