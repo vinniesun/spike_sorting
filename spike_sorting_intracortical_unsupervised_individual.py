@@ -7,20 +7,25 @@ from datetime import datetime
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 # Hungarian algorithm for optimal assignment
 from scipy.optimize import linear_sum_assignment
-from sklearn.cluster import KMeans
+from sklearn.cluster import KMeans, SpectralClustering
+from sklearn.decomposition import PCA
+from sklearn.mixture import GaussianMixture
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from model import *
 from utils import (
     IntracorticalDataset,
+    IntracorticalDatasetForDEC,
     dv_to_lif_spike_gen,
     generate_event_stream_dm,
     huber_vr,
     load_dataset_intracortical,
+    target_distribution,
     train_test_split_spike_sorting,
     van_rossum_distance,
     weighted_huber_loss,
@@ -74,31 +79,55 @@ def train_ae(
 def train_clustering(
     ae,
     net,
+    train_dataset,
     train_loader,
+    test_loader, 
     optimiser,
     loss_fn,
     args,
+    kmeans_acc,
+    n_clusters=3,
     scheduler=None,
 ):
     best_recon_loss = float("inf")
     best_cluster_loss = float("inf")
-    dec_loss_fn = nn.KLDivLoss(reduction="mean")
-    gamma = 1.0  # weight for the clustering loss
+    best_acc = kmeans_acc
+    dec_loss_fn = nn.KLDivLoss(reduction="batchmean")  # KL divergence loss for clustering
+    reconstruction_weight = 0.1
+
+    torch.save(net.state_dict(), MODEL_FILENAME_ACC)
+    torch.save(ae.state_dict(), MODEL_FILENAME_DEC_AE)
+
+    # get all data for target_distribution
+    target_distribution_data = train_dataset.spikes
+
     for epoch in tqdm(range(NUM_EPOCHS)):
+        if epoch % 5 == 0: # try refreshing every 5-10 epochs
+            ae.eval()
+            net.eval()
+            with torch.no_grad():
+                target_distribution_data = target_distribution_data.to(DEVICE)
+                latent_representation, reconstructed, _ = ae(target_distribution_data)
+                cluster_assignment = net(latent_representation)
+            target = target_distribution(cluster_assignment).detach()
+
         net.train()
+        ae.train()
         curr_loss = 0.0
         total_recon_loss = 0.0
         total_cluster_loss = 0.0
-        for data, label in train_loader:
+        for data, label, idx in train_loader:
             data = data.to(DEVICE)  # shape (batch_size, seq_len)
             label = label.to(DEVICE)  # shape (batch_size)
             # print(f"data shape: {data.shape}, label shape: {label.shape}")
 
+            # with torch.no_grad():
+            #     latent_representation, reconstructed, _ = ae(data)
             latent_representation, reconstructed, _ = ae(data)
-            
             cluster_assignment = net(latent_representation)
 
-            cluster_loss = dec_loss_fn(cluster_assignment.log(), label)
+            # cluster_loss = dec_loss_fn(cluster_assignment.log(), target) / cluster_assignment.shape[0]  # KL divergence loss
+            cluster_loss = dec_loss_fn(cluster_assignment.log(), target[idx])  # KL divergence loss
 
             if args.acc_mode == "huber":
                 reconstruction_loss = loss_fn(reconstructed, data, event_weight=10.0, zero_weight=1.0, delta=1.0)
@@ -109,7 +138,8 @@ def train_clustering(
             else:
                 reconstruction_loss = loss_fn(reconstructed, data)
 
-            loss = gamma * cluster_loss + reconstruction_loss
+            normalized_reconstruction_loss = reconstruction_loss / reconstruction_loss.detach().clamp_min(1.0)
+            loss = cluster_loss + reconstruction_weight * normalized_reconstruction_loss
 
             curr_loss += loss.item()
             total_recon_loss += reconstruction_loss.item()
@@ -119,16 +149,34 @@ def train_clustering(
             loss.backward()
             optimiser.step()
 
-        with open(TRAINING_LOG_NAME, "a") as f:
-            f.write(f"\tEpoch {epoch + 1}/{NUM_EPOCHS}, Total Loss: {curr_loss:.4f}, Reconstruction Loss: {total_recon_loss:.4f}, Clustering Loss: {total_cluster_loss:.4f}\n")
-        # tqdm.write(f"Epoch {epoch+1}/{NUM_EPOCHS}, Training Accuracy: {train_acc:.4f}, Loss: {curr_loss:.4f}")
+        test_acc = test_clustering(
+            ae, 
+            net, 
+            test_loader, 
+            loss_fn=loss_fn, 
+            n_clusters=n_clusters, 
+            n_classes=n_clusters, 
+            args=args,
+            final_test=False,
+            load_checkpoint=False,
+            load_ae_checkpoint=False,
+        )
 
-        if total_cluster_loss < best_cluster_loss:
+        if test_acc > best_acc:
             torch.save(net.state_dict(), MODEL_FILENAME_ACC)
-            best_cluster_loss = total_cluster_loss
-        if total_recon_loss < best_recon_loss:
-            torch.save(ae.state_dict(), MODEL_FILENAME_LOSS)
-            best_recon_loss = total_recon_loss
+            torch.save(ae.state_dict(), MODEL_FILENAME_DEC_AE)
+            best_acc = test_acc
+
+        # if total_cluster_loss < best_cluster_loss:
+        #     torch.save(net.state_dict(), MODEL_FILENAME_ACC)
+        #     best_cluster_loss = total_cluster_loss
+        # if total_recon_loss < best_recon_loss:
+        #     torch.save(ae.state_dict(), MODEL_FILENAME_LOSS)
+        #     best_recon_loss = total_recon_loss
+
+        with open(TRAINING_LOG_NAME, "a") as f:
+            f.write(f"\tEpoch {epoch + 1}/{NUM_EPOCHS}, Total Loss: {curr_loss:.4f}, Reconstruction Loss: {total_recon_loss:.4f}, Clustering Loss: {total_cluster_loss:.4f}, Test acc: {test_acc:.4f}\n")
+        # tqdm.write(f"Epoch {epoch+1}/{NUM_EPOCHS}, Training Accuracy: {train_acc:.4f}, Loss: {curr_loss:.4f}")
 
         if scheduler is not None:
             scheduler.step()
@@ -142,12 +190,16 @@ def test_clustering(
     n_classes,
     args,
     final_test: bool = False,
+    load_checkpoint: bool = True,
+    load_ae_checkpoint: bool = True,
 ):
-    test_ae_net.load_state_dict(torch.load(MODEL_FILENAME_LOSS, weights_only=True))
+    if load_ae_checkpoint:
+        test_ae_net.load_state_dict(torch.load(MODEL_FILENAME_DEC_AE, weights_only=True))
     test_ae_net.to(DEVICE)
     test_ae_net.eval()
 
-    net.load_state_dict(torch.load(MODEL_FILENAME_ACC, weights_only=True))
+    if load_checkpoint:
+        net.load_state_dict(torch.load(MODEL_FILENAME_ACC, weights_only=True))
     net.to(DEVICE)
     net.eval()
 
@@ -158,10 +210,12 @@ def test_clustering(
             data = data.to(DEVICE)
             label = label.to(DEVICE)
 
-            latent_representation, reconstructed, _ = ae(data)
+            with torch.no_grad():
+                latent_representation, reconstructed, _ = test_ae_net(data)
+            # latent_representation = F.normalize(latent_representation, p=2, dim=1)  # Normalize the latent representation
             cluster_assignment = net(latent_representation)
 
-            predictions.append(cluster_assignment.cpu().numpy())
+            predictions.append(cluster_assignment.argmax(dim=1).cpu().numpy())
             labels.append(label.cpu().numpy())
 
     counts = np.zeros((n_clusters, n_classes), dtype=np.int64)
@@ -170,12 +224,14 @@ def test_clustering(
     np.add.at(counts, (predictions, labels), 1)
 
     rows, cols = linear_sum_assignment(-counts)
-    final_acc = counts[rows, cols].sum() / np.concatenate(labels).shape[0]
+    final_acc = counts[rows, cols].sum() / labels.shape[0]
 
     if final_test:
         # tqdm.write(f"Final Test Accuracy: {test_acc:.4f}")
         with open(TRAINING_LOG_NAME, "a") as f:
             f.write(f"\t\tFinal Test Accuracy: {final_acc:.4f}\n")
+    else:
+        return final_acc
 
 def test_ae(
     net,
@@ -276,7 +332,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     BATCH_SIZE = 256  # 128 or 64
-    NUM_EPOCHS = 500
+    if args.model_type == "ae":  # noqa: SIM114
+        NUM_EPOCHS = 500
+    elif args.model_type == "kmeans":
+        NUM_EPOCHS = 500
 
     TRAINING_LOG_PATH = "./spike_sorting_training_log"
     if not os.path.exists(TRAINING_LOG_PATH):
@@ -344,6 +403,7 @@ if __name__ == "__main__":
 
             MODEL_FILENAME_ACC = f"./intracortical_weights/spike_sorting_kmeans_{filename[:-4]}_best_model_acc.pth"
             MODEL_FILENAME_LOSS = f"./intracortical_weights/spike_sorting_ae_{filename[:-4]}_best_model_loss.pth"
+            MODEL_FILENAME_DEC_AE = f"./intracortical_weights/spike_sorting_dec_{filename[:-4]}_best_model_ae.pth"
 
             with open(TRAINING_LOG_NAME, "a") as f:
                 f.write(f"Currently Loading: filename: {filename}\n\n")
@@ -431,27 +491,6 @@ if __name__ == "__main__":
                 torch.tensor(test_label, dtype=torch.long) - 1
             )  # Offset by 1 to start from 0
 
-            train_dataset = IntracorticalDataset(
-                training_spikes_tensor,
-                training_labels_tensor,
-                # transform=v2.Compose([
-                #     SwapAdjacent(p=0.5)
-                # ])
-            )
-            train_loader = DataLoader(
-                train_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=False
-            )
-            test_dataset = IntracorticalDataset(
-                test_spikes_tensor,
-                test_labels_tensor,
-                # transform=v2.Compose([
-                #     SwapAdjacent(p=0.5)
-                # ])
-            )
-            test_loader = DataLoader(
-                test_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False
-            )
-
             # ae = LSTMAutoencoder(
             #     input_dim=1,
             #     seq_len=training_spikes_tensor.shape[1],
@@ -461,7 +500,7 @@ if __name__ == "__main__":
             ae = Conv1DLSTMAE(
                 seq_len=training_spikes_tensor.shape[1],
                 input_dim=1,
-                out_channels=16,
+                out_channels=32,
                 hidden_dim=args.hidden_dim,
                 latent_dim=args.latent_dim,
                 kernel_size=4,
@@ -498,6 +537,27 @@ if __name__ == "__main__":
             scheduler = None
 
             if args.model_type == "ae":
+                train_dataset = IntracorticalDataset(
+                    training_spikes_tensor,
+                    training_labels_tensor,
+                    # transform=v2.Compose([
+                    #     SwapAdjacent(p=0.5)
+                    # ])
+                )
+                train_loader = DataLoader(
+                    train_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=False
+                )
+                test_dataset = IntracorticalDataset(
+                    test_spikes_tensor,
+                    test_labels_tensor,
+                    # transform=v2.Compose([
+                    #     SwapAdjacent(p=0.5)
+                    # ])
+                )
+                test_loader = DataLoader(
+                    test_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False
+                )
+
                 train_ae(
                     ae,
                     train_loader,
@@ -510,27 +570,121 @@ if __name__ == "__main__":
                 test_ae(test_ae_net, test_loader, loss_fn=loss_fn, args=args, final_test=True)
 
             elif args.model_type == "kmeans":
+                train_dataset = IntracorticalDataset(
+                    training_spikes_tensor,
+                    training_labels_tensor,
+                    # transform=v2.Compose([
+                    #     SwapAdjacent(p=0.5)
+                    # ])
+                )
+                train_loader = DataLoader(
+                    train_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=False
+                )
+                test_dataset = IntracorticalDataset(
+                    test_spikes_tensor,
+                    test_labels_tensor,
+                    # transform=v2.Compose([
+                    #     SwapAdjacent(p=0.5)
+                    # ])
+                )
+                test_loader = DataLoader(
+                    test_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False
+                )
                 ae.load_state_dict(torch.load(MODEL_FILENAME_LOSS, weights_only=True))
 
                 # get the latent representations for the training data
-                latent_representations = []
+                train_latent_representations = []
                 ae.eval()
                 with torch.no_grad():
                     for data, label in train_loader:
                         data = data.to(DEVICE)
                         latent_representation, reconstructed, _ = ae(data)
-                        latent_representations.append(latent_representation.cpu())
-                latent_representations = torch.cat(latent_representations, dim=0).numpy()
-            
-                # get initial cluster centroids
-                kmeans = KMeans(n_clusters=len(spike_classes), n_init=10, random_state=SEED)
-                kmeans.fit(latent_representations)
+                        train_latent_representations.append(latent_representation.cpu())
+                train_latent_representations = torch.cat(train_latent_representations, dim=0).numpy()
+
+                # get initial cluster centroids/Kmeans
+                kmeans = KMeans(n_clusters=len(spike_classes), n_init=50, random_state=SEED)
+                kmeans.fit(train_latent_representations)
                 initial_centroids = torch.tensor(kmeans.cluster_centers_, dtype=torch.float32)
+
+                # SpectralClustering
+                # sc = SpectralClustering(
+                #     n_clusters=len(spike_classes),
+                #     affinity="nearest_neighbors",
+                #     n_neighbors=10,
+                #     random_state=SEED,
+                #     assign_labels="discretize",
+                #     n_init=50
+                # )
+                # sc.fit(train_latent_representations)
+
+                # GaussianMixture
+                gmm = GaussianMixture(
+                    n_components=len(spike_classes),
+                    covariance_type="full",
+                    random_state=SEED,
+                    n_init=50
+                )
+                gmm.fit(train_latent_representations)
+
+                test_latent_representations, labels = [], []
+                ae.eval()
+                with torch.no_grad():
+                    for data, label in test_loader:
+                        data = data.to(DEVICE)
+                        latent_representation, reconstructed, _ = ae(data)
+                        test_latent_representations.append(latent_representation.cpu())
+                        labels.append(label.cpu())
+
+                test_latent_representations = torch.cat(test_latent_representations, dim=0).numpy()
+                labels = torch.cat(labels, dim=0).numpy()
+
+                kmeans_predictions = kmeans.predict(test_latent_representations)
+                # sc_predictions = sc.fit_predict(test_latent_representations)
+                gmm_predictions = gmm.predict(test_latent_representations)
+
+                # Calculate kmeans accuracy
+                counts = np.zeros((len(spike_classes), len(spike_classes)), dtype=np.int64)
+                np.add.at(counts, (kmeans_predictions, labels), 1)
+                rows, cols = linear_sum_assignment(-counts)
+                kmeans_acc = counts[rows, cols].sum() / labels.shape[0]
+
+                with open(TRAINING_LOG_NAME, "a") as f:
+                    f.write(f"\t\tKmeans Accuracy: {kmeans_acc:.4f}\n")
+
+                # # Calculate SpectralClustering accuracy
+                # counts = np.zeros((len(spike_classes), len(spike_classes)), dtype=np.int64)
+                # np.add.at(counts, (sc_predictions, labels), 1)
+                # rows, cols = linear_sum_assignment(-counts)
+                # sc_acc = counts[rows, cols].sum() / labels.shape[0]
+                
+                # with open(TRAINING_LOG_NAME, "a") as f:
+                #     f.write(f"\t\tSpectral Clustering Accuracy: {sc_acc:.4f}\n")
+
+                # Calculate GMM accuracy
+                counts = np.zeros((len(spike_classes), len(spike_classes)), dtype=np.int64)
+                np.add.at(counts, (gmm_predictions, labels), 1)
+                rows, cols = linear_sum_assignment(-counts)
+                gmm_acc = counts[rows, cols].sum() / labels.shape[0]
             
+                with open(TRAINING_LOG_NAME, "a") as f:
+                    f.write(f"\t\tGMM Accuracy: {gmm_acc:.4f}\n")
+
+                train_dataset = IntracorticalDatasetForDEC(
+                    training_spikes_tensor,
+                    training_labels_tensor,
+                    # transform=v2.Compose([
+                    #     SwapAdjacent(p=0.5)
+                    # ])
+                )
+                train_loader = DataLoader(
+                    train_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=True
+                )
+
                 net = DEC(
                     num_clusters=len(spike_classes),
                     hidden_dim=args.latent_dim,
-                    alpha=1.0,
+                    alpha=0.5, # compare to see if its better to use 1.0 or 2.0
                     initial_centroids=initial_centroids,
                 )
 
@@ -538,8 +692,15 @@ if __name__ == "__main__":
                 test_ae_net = copy.deepcopy(ae)
                 test_net = copy.deepcopy(net)
 
+                # optimiser = torch.optim.AdamW(
+                #     net.parameters(), lr=1e-4, betas=(0.9, 0.999), weight_decay=1e-5
+                # )
                 optimiser = torch.optim.AdamW(
-                    net.parameters(), lr=2e-3, betas=(0.9, 0.999), weight_decay=0.1
+                    [
+                        {"params": ae.parameters(), "lr": 1e-5},
+                        {"params": net.parameters(), "lr": 1e-4},
+                    ],
+                    weight_decay=1e-6,
                 )
                 # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                 #     optimiser, T_max=NUM_EPOCHS, eta_min=1e-6
@@ -549,9 +710,14 @@ if __name__ == "__main__":
                 train_clustering(
                     ae,
                     net,
+                    train_dataset,
                     train_loader,
+                    test_loader, 
                     optimiser,
                     loss_fn,
+                    args,
+                    kmeans_acc,
+                    n_clusters=len(spike_classes),
                     scheduler=scheduler,
                 )
                 test_clustering(
@@ -561,6 +727,9 @@ if __name__ == "__main__":
                     loss_fn=loss_fn, 
                     n_clusters=len(spike_classes), 
                     n_classes=len(spike_classes), 
-                    final_test=True
+                    args=args,
+                    final_test=True,
+                    load_checkpoint=True,
+                    load_ae_checkpoint=True,
                 )
 

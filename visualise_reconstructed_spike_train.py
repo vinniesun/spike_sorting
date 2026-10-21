@@ -237,7 +237,7 @@ if __name__ == "__main__":
             net = Conv1DLSTMAE(
                 seq_len=training_spikes_tensor.shape[1],
                 input_dim=1,
-                out_channels=16,
+                out_channels=32,
                 hidden_dim=args.hidden_dim,
                 latent_dim=args.latent_dim,
                 kernel_size=4,

@@ -1,8 +1,9 @@
-from typing import Optional, Union, List, Tuple
+from typing import List, Optional, Tuple, Union
 
 import snntorch as snn
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from DCLS.construct.modules import Dcls1d
 from einops import repeat
 from snntorch.surrogate import atan

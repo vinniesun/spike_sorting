@@ -20,6 +20,20 @@ class IntracorticalDataset(Dataset):
             return self.transform(self.spikes[idx]), self.labels[idx]
         return self.spikes[idx], self.labels[idx]
 
+class IntracorticalDatasetForDEC(Dataset):
+    def __init__(self, spikes: torch.Tensor, labels: torch.Tensor, transform=None):
+        self.spikes = spikes
+        self.labels = labels
+        self.transform = transform
+
+    def __len__(self):
+        return self.spikes.shape[0]
+
+    def __getitem__(self, idx):
+        if self.transform:
+            return self.transform(self.spikes[idx]), self.labels[idx], torch.tensor(idx, dtype=torch.long)
+        return self.spikes[idx], self.labels[idx], torch.tensor(idx, dtype=torch.long)
+
 def get_threshold_reset_counts(input_signal, last_reset_voltage, off_threshold, on_threshold, pulse, num_threshold_reset):
     if pulse == 1:
         bound = on_threshold
@@ -364,3 +378,14 @@ def huber_vr(
     vr_distance = van_rossum_distance(pred, target, tau, dt)
 
     return alpha * huber_loss + beta * vr_distance.mean()
+
+def target_distribution(batch: torch.Tensor) -> torch.Tensor:
+    """
+    Compute the target distribution p_ij, given the batch (q_ij), as in 3.1.3 Equation 3 of
+    Xie/Girshick/Farhadi; this is used the KL-divergence loss function.
+
+    :param batch: [batch size, number of clusters] Tensor of dtype float
+    :return: [batch size, number of clusters] Tensor of dtype float
+    """
+    weight = (batch ** 2) / torch.sum(batch, 0)
+    return (weight.t() / torch.sum(weight, 1)).t()
