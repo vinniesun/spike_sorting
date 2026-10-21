@@ -28,6 +28,7 @@ from utils import (
     target_distribution,
     train_test_split_spike_sorting,
     van_rossum_distance,
+    vr_mae_count,
     weighted_huber_loss,
 )
 
@@ -54,9 +55,11 @@ def train_ae(
             if args.acc_mode == "huber":
                 loss = loss_fn(reconstructed, data, event_weight=10.0, zero_weight=1.0, delta=1.0)
             elif args.acc_mode == "vr":
-                loss = loss_fn(reconstructed, data, tau=args.tau) # tau of 10us
+                loss = loss_fn(reconstructed, data, tau=args.tau, dt=1/24000) # tau of 10us
             elif args.acc_mode == "huber_vr":
-                loss = loss_fn(reconstructed, data, event_weight=10.0, zero_weight=1.0, delta=1.0, tau=args.tau)
+                loss = loss_fn(reconstructed, data, event_weight=10.0, zero_weight=1.0, delta=1.0, tau=args.tau, dt=1/24000)
+            elif args.acc_mode == "vr_mae_count":
+                loss = loss_fn(reconstructed, data, tau=args.tau, dt=1/24000)
             else:
                 loss = loss_fn(reconstructed, data)
             curr_loss += loss.item()
@@ -132,9 +135,11 @@ def train_clustering(
             if args.acc_mode == "huber":
                 reconstruction_loss = loss_fn(reconstructed, data, event_weight=10.0, zero_weight=1.0, delta=1.0)
             elif args.acc_mode == "vr":
-                reconstruction_loss = loss_fn(reconstructed, data, tau=args.tau) # tau of 10us
+                reconstruction_loss = loss_fn(reconstructed, data, tau=args.tau, dt=1/24000) # tau of 10us
             elif args.acc_mode == "huber_vr":
-                reconstruction_loss = loss_fn(reconstructed, data, event_weight=10.0, zero_weight=1.0, delta=1.0, tau=args.tau)
+                reconstruction_loss = loss_fn(reconstructed, data, event_weight=10.0, zero_weight=1.0, delta=1.0, tau=args.tau, dt=1/24000)
+            elif args.acc_mode == "vr_mae_count":
+                reconstruction_loss = loss_fn(reconstructed, data, tau=args.tau, dt=1/24000)
             else:
                 reconstruction_loss = loss_fn(reconstructed, data)
 
@@ -256,9 +261,11 @@ def test_ae(
             if args.acc_mode == "huber":
                 loss = loss_fn(reconstructed, data, event_weight=10.0, zero_weight=1.0, delta=1.0)
             elif args.acc_mode == "vr":
-                loss = loss_fn(reconstructed, data, tau=args.tau) # tau of 10us
+                loss = loss_fn(reconstructed, data, tau=args.tau, dt=1/24000) # tau of 10us
             elif args.acc_mode == "huber_vr":
-                loss = loss_fn(reconstructed, data, event_weight=10.0, zero_weight=1.0, delta=1.0, tau=args.tau)
+                loss = loss_fn(reconstructed, data, event_weight=10.0, zero_weight=1.0, delta=1.0, tau=args.tau, dt=1/24000)
+            elif args.acc_mode == "vr_mae_count":
+                loss = loss_fn(reconstructed, data, tau=args.tau, dt=1/24000)
             else:
                 loss = loss_fn(reconstructed, data)
             total_loss += loss.item()
@@ -288,7 +295,7 @@ if __name__ == "__main__":
         "--acc_mode",
         type=str,
         default="mse",
-        choices=["mse", "mae", "huber", "vr", "huber_vr"],
+        choices=["mse", "mae", "huber", "vr", "huber_vr", "vr_mae_count"],
         help="Accuracy mode for training and testing",
     )
     parser.add_argument(
@@ -530,6 +537,8 @@ if __name__ == "__main__":
                 loss_fn = van_rossum_distance
             elif args.acc_mode == "huber_vr":
                 loss_fn = huber_vr
+            elif args.acc_mode == "vr_mae_count":
+                loss_fn = vr_mae_count
 
             # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             #     optimiser, T_max=NUM_EPOCHS, eta_min=1e-5

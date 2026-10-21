@@ -379,6 +379,27 @@ def huber_vr(
 
     return alpha * huber_loss + beta * vr_distance.mean()
 
+def vr_mae_count(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    tau: float = 5.0,
+    dt: float = 1.0,
+    alpha: float = 1.0,
+    beta: float = 1.0,
+    gamma: float = 1.0
+) -> torch.Tensor:
+    """
+    Combined loss function of MAE loss and van Rossum distance.
+    """
+    mae_loss = F.l1_loss(pred, target)
+    vr_distance = van_rossum_distance(pred, target, tau, dt)
+
+    pred_count = torch.sum(pred != 0, dim=-1, dtype=torch.float32)
+    target_count = torch.sum(target != 0, dim=-1, dtype=torch.float32)
+    count_loss = F.l1_loss(pred_count, target_count)
+
+    return alpha * vr_distance.mean() + beta * mae_loss + gamma * count_loss
+
 def target_distribution(batch: torch.Tensor) -> torch.Tensor:
     """
     Compute the target distribution p_ij, given the batch (q_ij), as in 3.1.3 Equation 3 of
