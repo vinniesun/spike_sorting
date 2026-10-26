@@ -1057,6 +1057,7 @@ class Conv1DLSTMAE(nn.Module):
             batch_first=True
         )
         self.to_latent = nn.Linear(hidden_dim, latent_dim)
+        self.bn = nn.BatchNorm1d(latent_dim, affine=False)
 
         # decoder
         self.from_latent = nn.Linear(latent_dim, hidden_dim)
@@ -1075,7 +1076,7 @@ class Conv1DLSTMAE(nn.Module):
         _, (h, c) = self.lstm_encoder(x) # h/c shape: (1, b, hidden_dim)
         h = h.squeeze(0) # shape: (b, hidden_dim)
 
-        out = self.to_latent(h)
+        out = self.bn(self.to_latent(h))
 
         return out
 

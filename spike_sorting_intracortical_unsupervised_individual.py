@@ -23,12 +23,14 @@ from utils import (
     IntracorticalDatasetForDEC,
     dv_to_lif_spike_gen,
     generate_event_stream_dm,
+    generate_event_stream_lif,
     huber_vr,
     load_dataset_intracortical,
     target_distribution,
     train_test_split_spike_sorting,
     van_rossum_distance,
     vr_mae_count,
+    vr_mse,
     weighted_huber_loss,
 )
 
@@ -36,6 +38,7 @@ from utils import (
 def train_ae(
     net,
     train_loader,
+    test_loader,
     optimiser,
     loss_fn,
     args,
@@ -58,7 +61,9 @@ def train_ae(
                 loss = loss_fn(reconstructed, data, tau=args.tau, dt=1/24000) # tau of 10us
             elif args.acc_mode == "huber_vr":
                 loss = loss_fn(reconstructed, data, event_weight=10.0, zero_weight=1.0, delta=1.0, tau=args.tau, dt=1/24000)
-            elif args.acc_mode == "vr_mae_count":
+            elif args.acc_mode == "vr_mae_count":  # noqa: SIM114
+                loss = loss_fn(reconstructed, data, tau=args.tau, dt=1/24000)
+            elif args.acc_mode == "vr_mse":
                 loss = loss_fn(reconstructed, data, tau=args.tau, dt=1/24000)
             else:
                 loss = loss_fn(reconstructed, data)
@@ -72,9 +77,18 @@ def train_ae(
             f.write(f"\tEpoch {epoch + 1}/{NUM_EPOCHS}, Loss: {curr_loss:.4f}\n")
         # tqdm.write(f"Epoch {epoch+1}/{NUM_EPOCHS}, Training Accuracy: {train_acc:.4f}, Loss: {curr_loss:.4f}")
 
-        if curr_loss < best_loss:
+        test_loss = test_ae(
+            net,
+            test_loader,
+            loss_fn,
+            args,
+            final_test=False,
+            load_checkpoint=False
+        )
+
+        if test_loss < best_loss:
             torch.save(net.state_dict(), MODEL_FILENAME_LOSS)
-            best_loss = curr_loss
+            best_loss = test_loss
 
         if scheduler is not None:
             scheduler.step()
@@ -138,13 +152,16 @@ def train_clustering(
                 reconstruction_loss = loss_fn(reconstructed, data, tau=args.tau, dt=1/24000) # tau of 10us
             elif args.acc_mode == "huber_vr":
                 reconstruction_loss = loss_fn(reconstructed, data, event_weight=10.0, zero_weight=1.0, delta=1.0, tau=args.tau, dt=1/24000)
-            elif args.acc_mode == "vr_mae_count":
+            elif args.acc_mode == "vr_mae_count":  # noqa: SIM114
+                reconstruction_loss = loss_fn(reconstructed, data, tau=args.tau, dt=1/24000)
+            elif args.acc_mode == "vr_mse":
                 reconstruction_loss = loss_fn(reconstructed, data, tau=args.tau, dt=1/24000)
             else:
                 reconstruction_loss = loss_fn(reconstructed, data)
 
-            normalized_reconstruction_loss = reconstruction_loss / reconstruction_loss.detach().clamp_min(1.0)
-            loss = cluster_loss + reconstruction_weight * normalized_reconstruction_loss
+            # normalized_reconstruction_loss = reconstruction_loss / reconstruction_loss.detach().clamp_min(1.0)
+            # loss = cluster_loss + reconstruction_weight * normalized_reconstruction_loss
+            loss = cluster_loss + reconstruction_weight * reconstruction_loss
 
             curr_loss += loss.item()
             total_recon_loss += reconstruction_loss.item()
@@ -244,8 +261,10 @@ def test_ae(
     loss_fn,
     args,
     final_test: bool = False,
+    load_checkpoint: bool = True,
 ):
-    net.load_state_dict(torch.load(MODEL_FILENAME_LOSS, weights_only=True))
+    if load_checkpoint:
+        net.load_state_dict(torch.load(MODEL_FILENAME_LOSS, weights_only=True))
     net.to(DEVICE)
     net.eval()
 
@@ -262,19 +281,28 @@ def test_ae(
                 loss = loss_fn(reconstructed, data, event_weight=10.0, zero_weight=1.0, delta=1.0)
             elif args.acc_mode == "vr":
                 loss = loss_fn(reconstructed, data, tau=args.tau, dt=1/24000) # tau of 10us
+                # loss = loss / loss.detach().clamp_min(1.0) # normalize the loss to avoid large gradients
             elif args.acc_mode == "huber_vr":
                 loss = loss_fn(reconstructed, data, event_weight=10.0, zero_weight=1.0, delta=1.0, tau=args.tau, dt=1/24000)
-            elif args.acc_mode == "vr_mae_count":
+                # loss = loss / loss.detach().clamp_min(1.0) # normalize the loss to avoid large gradients
+            elif args.acc_mode == "vr_mae_count":  # noqa: SIM114
                 loss = loss_fn(reconstructed, data, tau=args.tau, dt=1/24000)
+                # loss = loss / loss.detach().clamp_min(1.0) # normalize the loss to avoid large gradients
+            elif args.acc_mode == "vr_mse":
+                loss = loss_fn(reconstructed, data, tau=args.tau, dt=1/24000)
+                # loss = loss / loss.detach().clamp_min(1.0) # normalize the loss to avoid large gradients
             else:
                 loss = loss_fn(reconstructed, data)
             total_loss += loss.item()
             total_samples += data.shape[0]
 
+    final_loss = total_loss / total_samples
     if final_test:
         # tqdm.write(f"Final Test Accuracy: {test_acc:.4f}")
         with open(TRAINING_LOG_NAME, "a") as f:
-            f.write(f"\t\tFinal Average Test Loss: {total_loss/total_samples:.4f}\n")
+            f.write(f"\t\tFinal Average Test Loss: {final_loss:.4f}\n")
+    else:
+        return final_loss
 
 if __name__ == "__main__":
     """
@@ -295,7 +323,7 @@ if __name__ == "__main__":
         "--acc_mode",
         type=str,
         default="mse",
-        choices=["mse", "mae", "huber", "vr", "huber_vr", "vr_mae_count"],
+        choices=["mse", "mae", "huber", "vr", "huber_vr", "vr_mae_count", "vr_mse"],
         help="Accuracy mode for training and testing",
     )
     parser.add_argument(
@@ -326,7 +354,7 @@ if __name__ == "__main__":
         "--encoder",
         type=str,
         default="dm",
-        choices=["dm", "dv"],
+        choices=["dm", "dv", "lif", "none"],
         help="Encoder type for the DM or DV encoder",
     )
     parser.add_argument(
@@ -340,7 +368,7 @@ if __name__ == "__main__":
 
     BATCH_SIZE = 256  # 128 or 64
     if args.model_type == "ae":  # noqa: SIM114
-        NUM_EPOCHS = 500
+        NUM_EPOCHS = 250
     elif args.model_type == "kmeans":
         NUM_EPOCHS = 500
 
@@ -369,8 +397,8 @@ if __name__ == "__main__":
     train_test_split_ratio = 0.7  # 70% training, 30% testing
     encoder_threshold = args.encoder_th
     lif_tau = 1 * (1 / 24000)
-    detection_window_size = 12  # original 8 
-    sorting_window_size = 48    # original 32
+    detection_window_size = 8  # original 8 
+    sorting_window_size = 32    # original 32
 
     DETECTION_IDX = "Intracortical_Spike_Detection_IDX.txt"
 
@@ -398,12 +426,6 @@ if __name__ == "__main__":
 
         line_no += 1
 
-    (
-        complete_train_data,
-        complete_train_labels,
-        complete_test_data,
-        complete_test_labels,
-    ) = [], [], {}, {}
     for difficulty in ["Difficult1", "Difficult2", "Easy1", "Easy2"]:
         for noise_level in ["005", "01", "015", "02"]:
             filename = f"C_{difficulty}_noise{noise_level}.mat"
@@ -444,8 +466,19 @@ if __name__ == "__main__":
                     lif_tau=lif_tau,
                     reset_mechanism=reset_mechanism,
                 )
+            elif encoder == "lif":
+                # for lif, the threshold is: 0.5, 0.8, 1.2, 1.5, 1.8, 2.0, 2.5, 3.0
+                spike_train = generate_event_stream_lif(
+                    filtered_signal,
+                    time_step=sampling_interval,
+                    uth=args.encoder_th,
+                    lif_tau=sampling_interval,
+                    if_reconstruct=False
+                )
+            elif encoder == "none":
+                spike_train = filtered_signal
             else:
-                raise ValueError("Invalid encoder type. Choose either 'dm' or 'dv'.")
+                raise ValueError("Invalid encoder type. Choose either 'dm' or 'dv' or 'lif' or 'none'.")
 
             detected_spikes = np.array(detection_idx_results_label_spike_time[filename])
             detected_spike_times = np.array(
@@ -539,6 +572,8 @@ if __name__ == "__main__":
                 loss_fn = huber_vr
             elif args.acc_mode == "vr_mae_count":
                 loss_fn = vr_mae_count
+            elif args.acc_mode == "vr_mse":
+                loss_fn = vr_mse
 
             # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             #     optimiser, T_max=NUM_EPOCHS, eta_min=1e-5
@@ -570,6 +605,7 @@ if __name__ == "__main__":
                 train_ae(
                     ae,
                     train_loader,
+                    test_loader,
                     optimiser,
                     loss_fn,
                     args,

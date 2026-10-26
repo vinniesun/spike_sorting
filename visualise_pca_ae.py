@@ -4,13 +4,13 @@ import os
 import random
 from datetime import datetime
 
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
+import plotly.graph_objects as go
 import torch
 import torch.nn as nn
-
-from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
+from sklearn.decomposition import PCA
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -19,10 +19,10 @@ from utils import (
     IntracorticalDataset,
     dv_to_lif_spike_gen,
     generate_event_stream_dm,
+    generate_event_stream_lif,
     load_dataset_intracortical,
     train_test_split_spike_sorting,
 )
-
 
 if __name__ == "__main__":
     """
@@ -61,7 +61,7 @@ if __name__ == "__main__":
         "--encoder",
         type=str,
         default="dm",
-        choices=["dm", "dv"],
+        choices=["dm", "dv", "lif", "none"],
         help="Encoder type for the DM or DV encoder",
     )
 
@@ -136,7 +136,8 @@ if __name__ == "__main__":
             filename = f"C_{difficulty}_noise{noise_level}.mat"
 
             MODEL_FILENAME_ACC = f"./intracortical_weights/spike_sorting_kmeans_{filename[:-4]}_best_model_acc.pth"
-            MODEL_FILENAME_LOSS = f"./intracortical_weights/spike_sorting_ae_{filename[:-4]}_best_model_loss.pth"
+            # MODEL_FILENAME_LOSS = f"./intracortical_weights/spike_sorting_ae_{filename[:-4]}_best_model_loss.pth"
+            MODEL_FILENAME_LOSS = f"./intracortical_weights/spike_sorting_ae_{difficulty}_best_model_loss.pth"
             # MODEL_FILENAME_ACC = "./intracortical_weights/spike_sorting_kmeans_best_model_acc.pth"
             # MODEL_FILENAME_LOSS = "./intracortical_weights/spike_sorting_ae_best_model_loss.pth"
 
@@ -169,8 +170,19 @@ if __name__ == "__main__":
                     lif_tau=lif_tau,
                     reset_mechanism=reset_mechanism,
                 )
+            elif encoder == "lif":
+                # for lif, the threshold is: 0.5, 0.8, 1.2, 1.5, 1.8, 2.0, 2.5, 3.0
+                spike_train = generate_event_stream_lif(
+                    filtered_signal,
+                    time_step=sampling_interval,
+                    uth=args.encoder_th,
+                    lif_tau=sampling_interval,
+                    if_reconstruct=False
+                )
+            elif encoder == "none":
+                spike_train = filtered_signal
             else:
-                raise ValueError("Invalid encoder type. Choose either 'dm' or 'dv'.")
+                raise ValueError("Invalid encoder type. Choose either 'dm' or 'dv' or 'lif' or 'none'.")
 
             detected_spikes = np.array(detection_idx_results_label_spike_time[filename])
             detected_spike_times = np.array(
@@ -289,21 +301,62 @@ if __name__ == "__main__":
                 inputs_for_pca = np.concatenate(inputs_for_pca, axis=0)
                 labels_for_pca = np.concatenate(labels_for_pca, axis=0)
 
-            pca = PCA(n_components=2)
-            pca_result = pca.fit_transform(inputs_for_pca)
+            # pca = PCA(n_components=2)
+            # pca_result = pca.fit_transform(inputs_for_pca)
 
+            # colours = ['red', 'green', 'blue']
+            # labels = ['Class 1', 'Class 2', 'Class 3']
+
+            # fig, ax = plt.subplots(figsize=(8, 6))
+            # for i in range(len(spike_classes)):
+            #     mask = labels_for_pca == i
+            #     ax.scatter(pca_result[mask, 0], pca_result[mask, 1], color=colours[i], label=labels[i], alpha=0.5)
+
+            # ax.legend(loc="best")
+            # ax.set_xlabel("PCA Component 1")
+            # ax.set_ylabel("PCA Component 2")
+
+            # plt.tight_layout()
+            # plt.savefig(f"{curr_pca_path}/{filename[:-4]}_pca.jpg", dpi=300)
+            # plt.close()
+
+            pca = PCA(n_components=3)
+            pca_result = pca.fit_transform(inputs_for_pca)
+        
             colours = ['red', 'green', 'blue']
             labels = ['Class 1', 'Class 2', 'Class 3']
-
-            fig, ax = plt.subplots(figsize=(8, 6))
+        
+            fig = go.Figure()
             for i in range(len(spike_classes)):
                 mask = labels_for_pca == i
-                ax.scatter(pca_result[mask, 0], pca_result[mask, 1], color=colours[i], label=labels[i], alpha=0.5)
+                fig.add_trace(
+                    go.Scatter3d(
+                        x=pca_result[mask, 0],
+                        y=pca_result[mask, 1],
+                        z=pca_result[mask, 2],
+                        mode='markers',
+                        marker=dict(  # noqa: C408
+                            size=4,
+                            color=colours[i],
+                            opacity=0.5
+                        ),
+                        name=labels[i]
+                    )
+                )
+        
+            fig.update_layout(
+                title="3D PCA Scatter Plot",
+                scene=dict(  # noqa: C408
+                    xaxis_title="PCA Component 1",
+                    yaxis_title="PCA Component 2",
+                    zaxis_title="PCA Component 3"
+                ),
+                legend=dict(  # noqa: C408
+                    x=0.02,
+                    y=0.98
+                ),
+                margin=dict(l=0, r=0, b=0, t=40)  # noqa: C408
+            )
 
-            ax.legend(loc="best")
-            ax.set_xlabel("PCA Component 1")
-            ax.set_ylabel("PCA Component 2")
-
-            plt.tight_layout()
-            plt.savefig(f"{curr_pca_path}/{filename[:-4]}_pca.jpg", dpi=300)
-            plt.close()
+            html_path = f"{curr_pca_path}/{filename[:-4]}_pca_3d.html"
+            fig.write_html(html_path)

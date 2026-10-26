@@ -400,6 +400,23 @@ def vr_mae_count(
 
     return alpha * vr_distance.mean() + beta * mae_loss + gamma * count_loss
 
+def vr_mse(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    tau: float = 5.0,
+    dt: float = 1.0,
+    alpha: float = 1.0,
+    beta: float = 1.0,
+    gamma: float = 1.0
+) -> torch.Tensor:
+    """
+    Combined loss function of MSE loss and van Rossum distance.
+    """
+    mse_loss = F.mse_loss(pred, target)
+    vr_distance = van_rossum_distance(pred, target, tau, dt)
+
+    return alpha * vr_distance.mean() + beta * mse_loss
+
 def target_distribution(batch: torch.Tensor) -> torch.Tensor:
     """
     Compute the target distribution p_ij, given the batch (q_ij), as in 3.1.3 Equation 3 of

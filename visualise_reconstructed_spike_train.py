@@ -20,6 +20,7 @@ from utils import (
     IntracorticalDataset,
     dv_to_lif_spike_gen,
     generate_event_stream_dm,
+    generate_event_stream_lif,
     load_dataset_intracortical,
     train_test_split_spike_sorting,
 )
@@ -54,7 +55,7 @@ if __name__ == "__main__":
         "--encoder",
         type=str,
         default="dm",
-        choices=["dm", "dv"],
+        choices=["dm", "dv", "lif", "none"],
         help="Encoder type for the DM or DV encoder",
     )
 
@@ -120,12 +121,13 @@ if __name__ == "__main__":
         complete_test_data,
         complete_test_labels,
     ) = [], [], {}, {}
-    for difficulty in ["Difficult1", "Difficult2", "Easy1", "Easy2"]:
+    for difficulty in ["Difficult2", "Difficult1", "Easy1", "Easy2"]:
         for noise_level in ["005", "01", "015", "02"]:
             filename = f"C_{difficulty}_noise{noise_level}.mat"
 
             MODEL_FILENAME_ACC = f"./intracortical_weights/spike_sorting_kmeans_{filename[:-4]}_best_model_acc.pth"
-            MODEL_FILENAME_LOSS = f"./intracortical_weights/spike_sorting_ae_{filename[:-4]}_best_model_loss.pth"
+            # MODEL_FILENAME_LOSS = f"./intracortical_weights/spike_sorting_ae_{filename[:-4]}_best_model_loss.pth"
+            MODEL_FILENAME_LOSS = f"./intracortical_weights/spike_sorting_ae_{difficulty}_best_model_loss.pth"
             # MODEL_FILENAME_ACC = "./intracortical_weights/spike_sorting_kmeans_best_model_acc.pth"
             # MODEL_FILENAME_LOSS = "./intracortical_weights/spike_sorting_ae_best_model_loss.pth"
 
@@ -162,8 +164,19 @@ if __name__ == "__main__":
                     lif_tau=lif_tau,
                     reset_mechanism=reset_mechanism,
                 )
+            elif encoder == "lif":
+                # for lif, the threshold is: 0.5, 0.8, 1.2, 1.5, 1.8, 2.0, 2.5, 3.0
+                spike_train = generate_event_stream_lif(
+                    filtered_signal,
+                    time_step=sampling_interval,
+                    uth=args.encoder_th,
+                    lif_tau=sampling_interval,
+                    if_reconstruct=False
+                )
+            elif encoder == "none":
+                spike_train = filtered_signal
             else:
-                raise ValueError("Invalid encoder type. Choose either 'dm' or 'dv'.")
+                raise ValueError("Invalid encoder type. Choose either 'dm' or 'dv' or 'lif' or 'none'.")
 
             detected_spikes = np.array(detection_idx_results_label_spike_time[filename])
             detected_spike_times = np.array(
@@ -260,7 +273,7 @@ if __name__ == "__main__":
             net.eval()
 
             with torch.no_grad():
-                for i, (data, _) in tqdm(enumerate(train_loader), desc=f"Train split of file {filename}"):
+                for i, (data, label) in tqdm(enumerate(train_loader), desc=f"Train split of file {filename}"):
                     data = data.to(DEVICE)
 
                     latent_representation, reconstructed, _ = net(data)
@@ -278,10 +291,10 @@ if __name__ == "__main__":
                     ax[1].grid(which="both", linestyle="--", linewidth=0.5, alpha=0.5, color="gray")
 
                     plt.tight_layout()
-                    plt.savefig(f"{current_file_recon_path}train_{i}.jpg", dpi=300)
+                    plt.savefig(f"{current_file_recon_path}train_{i}_class_{label[0].item() + 1}.jpg", dpi=300)
                     plt.close()
 
-                for j, (data, _) in tqdm(enumerate(test_loader), desc=f"Test split of file {filename}"):
+                for j, (data, label) in tqdm(enumerate(test_loader), desc=f"Test split of file {filename}"):
                     data = data.to(DEVICE)
             
                     latent_representation, reconstructed, _ = net(data)
@@ -299,5 +312,5 @@ if __name__ == "__main__":
                     ax[1].grid(which="both", linestyle="--", linewidth=0.5, alpha=0.5, color="gray")
             
                     plt.tight_layout()
-                    plt.savefig(f"{current_file_recon_path}test_{j}.jpg", dpi=300)
+                    plt.savefig(f"{current_file_recon_path}test_{j}_class_{label[0].item() + 1}.jpg", dpi=300)
                     plt.close()
