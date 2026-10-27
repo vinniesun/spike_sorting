@@ -989,31 +989,32 @@ class Conv1DAE(nn.Module):
         super().__init__()
 
         self.encoder = nn.Sequential(
-            nn.Conv1d(in_channels=input_dim, out_channels=hidden_size[0], kernel_size=6, stride=2, padding=1), # output (bs, hidden_size[0], 15)
+            nn.Conv1d(in_channels=input_dim, out_channels=hidden_size[0], kernel_size=3, stride=2, padding=1), # output (bs, hidden_size[0], 24)
             nn.ReLU(),
-            nn.Conv1d(in_channels=hidden_size[0], out_channels=hidden_size[1], kernel_size=6, stride=2, padding=1), # output (bs, hidden_size[0], 6)
+            nn.Conv1d(in_channels=hidden_size[0], out_channels=hidden_size[1], kernel_size=3, stride=2, padding=1), # output (bs, hidden_size[0], 12)
             nn.ReLU(),
-            nn.Conv1d(in_channels=hidden_size[1], out_channels=hidden_size[2], kernel_size=6, stride=2, padding=1), # output (bs, hidden_size[0], 2)
+            nn.Conv1d(in_channels=hidden_size[1], out_channels=hidden_size[2], kernel_size=3, stride=2, padding=1), # output (bs, hidden_size[0], 6)
             nn.ReLU(),
             nn.Flatten(start_dim=1, end_dim=-1),
-            nn.Linear(hidden_size[2] * 2, latent_dim),
+            nn.Linear(hidden_size[2] * 6, latent_dim),
         )
+        self.bn = nn.BatchNorm1d(latent_dim, affine=False)
 
         self.decoder = nn.Sequential(
-            nn.Linear(latent_dim, hidden_size[2] * 2),
+            nn.Linear(latent_dim, hidden_size[2] * 6),
             nn.ReLU(),
-            nn.Unflatten(dim=1, unflattened_size=(hidden_size[2], 2)),
-            nn.ConvTranspose1d(in_channels=hidden_size[2], out_channels=hidden_size[1], kernel_size=6, stride=2, padding=1),
+            nn.Unflatten(dim=1, unflattened_size=(hidden_size[2], 6)),
+            nn.ConvTranspose1d(in_channels=hidden_size[2], out_channels=hidden_size[1], kernel_size=3, stride=2, padding=0), # output (bs, hidden_size[1], 13)
             nn.ReLU(),
-            nn.ConvTranspose1d(in_channels=hidden_size[1], out_channels=hidden_size[0], kernel_size=6, stride=2, padding=1),
+            nn.ConvTranspose1d(in_channels=hidden_size[1], out_channels=hidden_size[0], kernel_size=3, stride=2, padding=1), # output (bs, hidden_size[1], 25)
             nn.ReLU(),
-            nn.ConvTranspose1d(in_channels=hidden_size[0], out_channels=input_dim, kernel_size=6, stride=2, padding=0),
+            nn.ConvTranspose1d(in_channels=hidden_size[0], out_channels=input_dim, kernel_size=3, stride=2, padding=2, output_padding=1), # output (bs, input_dim, 48)
         )
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if x.ndim == 2:
             x = x.unsqueeze(1) # (B, T) -> (B, 1, T)
-        z = self.encoder(x)
+        z = self.bn(self.encoder(x))
         x_reconstructed = self.decoder(z)
 
         return z, x_reconstructed.squeeze(1), x

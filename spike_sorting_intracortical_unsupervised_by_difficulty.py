@@ -118,8 +118,9 @@ def train_clustering(
     # get all data for target_distribution
     target_distribution_data = train_dataset.spikes
 
+    ite = 0 # iteration counter for updating target distribution. by minibatch instead of epoch
     for epoch in tqdm(range(NUM_EPOCHS)):
-        if epoch % 5 == 0: # try refreshing every 5-10 epochs
+        if ite % 140 == 0: # try refreshing every 5-10 epochs
             ae.eval()
             net.eval()
             with torch.no_grad():
@@ -170,6 +171,8 @@ def train_clustering(
             optimiser.zero_grad()
             loss.backward()
             optimiser.step()
+
+            ite += 1
 
         test_acc = test_clustering(
             ae, 
@@ -368,7 +371,7 @@ if __name__ == "__main__":
 
     BATCH_SIZE = 256  # 128 or 64
     if args.model_type == "ae":  # noqa: SIM114
-        NUM_EPOCHS = 500
+        NUM_EPOCHS = 200
     elif args.model_type == "kmeans":
         NUM_EPOCHS = 500
 
@@ -397,8 +400,8 @@ if __name__ == "__main__":
     train_test_split_ratio = 0.7  # 70% training, 30% testing
     encoder_threshold = args.encoder_th
     lif_tau = 1 * (1 / 24000)
-    detection_window_size = 8  # original 8 
-    sorting_window_size = 32    # original 32
+    detection_window_size = 12  # original 8 
+    sorting_window_size = 48    # original 32. Try 47
 
     DETECTION_IDX = "Intracortical_Spike_Detection_IDX.txt"
 
@@ -544,22 +547,22 @@ if __name__ == "__main__":
             #     hidden_size=args.hidden_dim,
             #     latent_dim=args.latent_dim,
             # )
-            ae = Conv1DLSTMAE(
-                seq_len=training_spikes_tensor.shape[1],
-                input_dim=1,
-                out_channels=32,
-                hidden_dim=args.hidden_dim,
-                latent_dim=args.latent_dim,
-                kernel_size=4,
-                kernel_stride=2,
-                padding=1,
-            )
-            # ae = Conv1DAE(
-            #     input_dim=1,
+            # ae = Conv1DLSTMAE(
             #     seq_len=training_spikes_tensor.shape[1],
-            #     hidden_size=(32, 64, 96),
+            #     input_dim=1,
+            #     out_channels=32,
+            #     hidden_dim=args.hidden_dim,
             #     latent_dim=args.latent_dim,
+            #     kernel_size=4,
+            #     kernel_stride=2,
+            #     padding=1,
             # )
+            ae = Conv1DAE(
+                input_dim=1,
+                seq_len=training_spikes_tensor.shape[1],
+                hidden_size=(32, 64, 96),
+                latent_dim=args.latent_dim,
+            )
             ae.to(DEVICE)
             test_ae_net = copy.deepcopy(ae)
             
@@ -735,22 +738,22 @@ if __name__ == "__main__":
                 #     hidden_size=args.hidden_dim,
                 #     latent_dim=args.latent_dim,
                 # )
-                ae = Conv1DLSTMAE(
-                    seq_len=training_spikes_tensor.shape[1],
-                    input_dim=1,
-                    out_channels=32,
-                    hidden_dim=args.hidden_dim,
-                    latent_dim=args.latent_dim,
-                    kernel_size=4,
-                    kernel_stride=2,
-                    padding=1,
-                )
-                # ae = Conv1DAE(
-                #     input_dim=1,
+                # ae = Conv1DLSTMAE(
                 #     seq_len=training_spikes_tensor.shape[1],
-                #     hidden_size=(32, 64, 96),
+                #     input_dim=1,
+                #     out_channels=32,
+                #     hidden_dim=args.hidden_dim,
                 #     latent_dim=args.latent_dim,
+                #     kernel_size=4,
+                #     kernel_stride=2,
+                #     padding=1,
                 # )
+                ae = Conv1DAE(
+                    input_dim=1,
+                    seq_len=training_spikes_tensor.shape[1],
+                    hidden_size=(32, 64, 96),
+                    latent_dim=args.latent_dim,
+                )
                 ae.to(DEVICE)
                 test_ae_net = copy.deepcopy(ae)
                 
@@ -885,8 +888,8 @@ if __name__ == "__main__":
                 # )
                 optimiser = torch.optim.AdamW(
                     [
-                        {"params": ae.parameters(), "lr": 1e-5},
-                        {"params": net.parameters(), "lr": 1e-4},
+                        {"params": ae.parameters(), "lr": 1e-5}, # original 1e-5
+                        {"params": net.parameters(), "lr": 1e-4},# original 1e-4
                     ],
                     weight_decay=1e-6,
                 )

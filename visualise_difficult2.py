@@ -75,7 +75,8 @@ if __name__ == "__main__":
     lif_tau = 1 * (1 / 24000)
     detection_window_size = 8
     sorting_window_size = 32  # 2ms
-    
+    visualisation_window = 50
+
     DETECTION_IDX = "Intracortical_Spike_Detection_IDX.txt"
     VISUALISATION_DIR = "./difficult2_plots/"
     if not os.path.exists(VISUALISATION_DIR):
@@ -175,11 +176,11 @@ if __name__ == "__main__":
             for i in range(len(spike_times)):
                 if i in detected_spikes:
                     idx = np.where(detected_spikes == i)[0][0]
-                    signal_of_interest = filtered_signal[spike_times[idx] - 32 : spike_times[idx] + 32]
-                    spike_train_of_interest = spike_train[spike_times[idx] - 32 : spike_times[idx] + 32]
+                    signal_of_interest = filtered_signal[spike_times[idx] - visualisation_window : spike_times[idx] + visualisation_window]
+                    spike_train_of_interest = spike_train[spike_times[idx] - visualisation_window : spike_times[idx] + visualisation_window]
 
-                    idx_of_spike_detector = detected_spike_times[idx] - spike_times[i] + 32
-                    idx_of_spike_label = spike_times[i] - spike_times[i] + 32
+                    idx_of_spike_detector = detected_spike_times[idx] - spike_times[i] + visualisation_window
+                    idx_of_spike_label = spike_times[i] - spike_times[i] + visualisation_window
     
                     # plot the signal about the label spike time
                     # generate a vertical line for when spike is detected
@@ -206,10 +207,10 @@ if __name__ == "__main__":
                     plt.savefig(f"{current_file_recon_path}train_{i}_class_{spike_class_label[i].item()}.jpg", dpi=300)
                     plt.close()
                 else:
-                    signal_of_interest = filtered_signal[spike_times[idx] - 32 : spike_times[idx] + 32]
-                    spike_train_of_interest = spike_train[spike_times[idx] - 32 : spike_times[idx] + 32]
+                    signal_of_interest = filtered_signal[spike_times[idx] - visualisation_window : spike_times[idx] + visualisation_window]
+                    spike_train_of_interest = spike_train[spike_times[idx] - visualisation_window : spike_times[idx] + visualisation_window]
                     
-                    idx_of_spike_label = spike_times[i] - spike_times[i] + 32
+                    idx_of_spike_label = spike_times[i] - spike_times[i] + visualisation_window
                     
                     # plot the signal about the label spike time
                     # generate a vertical line for when spike is detected

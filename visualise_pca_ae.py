@@ -91,8 +91,8 @@ if __name__ == "__main__":
     train_test_split_ratio = 0.7  # 70% training, 30% testing
     encoder_threshold = args.encoder_th
     lif_tau = 1 * (1 / 24000)
-    detection_window_size = 8
-    sorting_window_size = 32  # 2ms
+    detection_window_size = 12  # original 8 
+    sorting_window_size = 48    # original 32. Try 47
 
     DETECTION_IDX = "Intracortical_Spike_Detection_IDX.txt"
     PCA_ANALYSIS_DIR = "./pca_analysis/"
