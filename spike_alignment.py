@@ -1,19 +1,14 @@
 import os
-import random
-from datetime import datetime
 
 import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
 
 from utils import (
-    IntracorticalDataset,
-    create_training_dataset_spike_detection,
     dv_to_lif_spike_gen,
     find_alignment_point,
     generate_event_stream_dm,
     load_dataset_intracortical,
-    train_test_split_spike_detection,
 )
 
 if __name__ == "__main__":
@@ -34,89 +29,123 @@ if __name__ == "__main__":
 
     dm_threshold = 0.2
 
-    DETECTION_IDX = f"Intracortical_Spike_Detection_IDX.txt"
+    alignment_window_half_dim = 12 # 0.5ms
 
-    detection_idx_results = {}
-    # parse the detection_idx file to get the detection idx and spike time idx for each file
+    DETECTION_IDX = "Intracortical_Spike_Detection_IDX.txt"
+    VISUALISATION_DIR = "./post_alignment_plots/"
+    if not os.path.exists(VISUALISATION_DIR):
+        os.makedirs(VISUALISATION_DIR)
+
+    detection_idx_results_when_detected = {}
+    detection_idx_results_label_spike_time = {}
     with open(DETECTION_IDX, "r") as f:
         detection_idx_lines = f.readlines()
-
+    
     line_no = 0
     while line_no < len(detection_idx_lines):
         line = detection_idx_lines[line_no]
         if "Filename: " in line:
             filename = line.split("Filename: ")[1][:-1]
-            detection_idx_results[filename] = []
+            detection_idx_results_when_detected[filename] = []
+            detection_idx_results_label_spike_time[filename] = []
         else:
             temp = line.split(",")
             detected_idx = int(temp[0].split("Detection idx: ")[1])
             spike_time_idx = int(temp[1].split(" Spike time idx: ")[1])
-            detection_idx_results[filename].append((detected_idx, spike_time_idx))
-
+            detection_idx_results_when_detected[filename].append(detected_idx)
+            detection_idx_results_label_spike_time[filename].append(spike_time_idx)
+    
         line_no += 1
 
-    for difficulty in ["Difficult1", "Difficult2", "Easy1", "Easy2"]:
+    for difficulty in ["Difficult1", "Difficult2"]:
         for noise_level in ["005", "01", "015", "02"]:
             filename = f"C_{difficulty}_noise{noise_level}.mat"
 
-            if not os.path.exists(f"./spike_alignment/{filename[:-4]}/"):
-                os.makedirs(f"./spike_alignment/{filename[:-4]}/")
+            current_file_recon_path = VISUALISATION_DIR + filename[:-4] + "/"
+            if not os.path.exists(current_file_recon_path):
+                os.makedirs(current_file_recon_path)
 
             signal, spike_class_label, spike_times, sampling_interval, \
             sampling_rate, spike_pulse_1ms_idx_length, spike_classes, \
             filtered_signal = load_dataset_intracortical(filepath, filename)
 
-            dv_u_hist, dv_spike_train, dv_time_lif = dv_to_lif_spike_gen(
+            on_threshold = 0.2
+            off_threshold = -0.2
+            event_stream = generate_event_stream_dm(
+                filtered_signal, on_threshold, off_threshold
+            )
+            spike_train_dm = np.zeros_like(signal)
+            spike_train_dm[event_stream[:, 0].astype(int)] = (
+                event_stream[:, 1] - event_stream[:, 2]
+            )
+            dv_u_hist, spike_train_dv, dv_time_lif = dv_to_lif_spike_gen(
                 signal=filtered_signal,
-                lif_threshold=lif_threshold,
+                lif_threshold=0.4,
                 sampling_interval=sampling_interval,
                 lif_tau=lif_tau,
-                reset_mechanism=reset_mechanism
+                reset_mechanism=reset_mechanism,
             )
 
-            event_stream = generate_event_stream_dm(filtered_signal, dm_threshold, -dm_threshold)
-            dm_spike_train = np.zeros_like(signal)
-            dm_spike_train[event_stream[:, 0].astype(int)] = event_stream[:, 1] - event_stream[:, 2]
+            detected_spikes = np.array(detection_idx_results_label_spike_time[filename])
+            detected_spike_times = np.array(detection_idx_results_when_detected[filename])
+            all_spike_signals = {i: [] for i in spike_classes}
+            all_spk_trains = {i: [] for i in spike_classes}
+            for i in tqdm(range(len(spike_times))):
+                if i in detected_spikes:
+                    idx = np.where(detected_spikes == i)[0][0]
 
-            ############ Verify spike window and gt spike time and spike signal matches
-            for detected_idx, spike_time_idx in tqdm(detection_idx_results[filename], desc=f"Plotting spike alignment for {filename}"):
-                # start_time, end_time = spike_times[detected_idx] - 8, spike_times[detected_idx] + 32
-                start_time, end_time = detected_idx - 8, detected_idx + 32
+                    # First get the detection index 
+                    idx_of_spike_detector = detected_spike_times[idx]
+                    idx_of_spike_label = spike_times[i]
 
-                # shifted_detected_idx = detected_idx - start_time # this should be zero based
-                shifted_detected_idx = 8
+                    # Then extract the window to align
+                    # We want the detected index point to sit right in the middle of the window
+                    for_alignment_window = spike_train_dm[idx_of_spike_detector - alignment_window_half_dim : idx_of_spike_detector + alignment_window_half_dim + 1]
 
-                fig, ax = plt.subplots(2, 1, figsize=(12, 10), sharex=False)
+                    # Find the alignment point
+                    alignment_point = find_alignment_point(for_alignment_window)
 
-                time = np.arange(filtered_signal[start_time:end_time].shape[0]) # / 24000
+                    # Get the relative index of idx_of_spike_detector with respect to for_alignment_window
+                    relative_idx = alignment_point - alignment_window_half_dim
 
-                ax[0].plot(time, filtered_signal[start_time:end_time], color="blue", label=r"V(t)")
+                    # Get the new aligned index of the spike detector
+                    new_idx_of_spike_detector = idx_of_spike_detector + relative_idx
 
-                dm_pos_idx = np.where(dm_spike_train[start_time:end_time] > 0)[0]
-                dm_neg_idx = np.where(dm_spike_train[start_time:end_time] < 0)[0]
+                    # draw the aligned window
+                    filtered_signal_aligned = filtered_signal[new_idx_of_spike_detector - 36 : new_idx_of_spike_detector + 36]
+                    spk_train_dm_aligned = spike_train_dm[new_idx_of_spike_detector - 36 : new_idx_of_spike_detector + 36]
+                    spk_train_dv_aligned = spike_train_dv[new_idx_of_spike_detector - 36 : new_idx_of_spike_detector + 36]
 
-                dv_pos_idx = np.where(dv_spike_train[start_time:end_time] > 0)[0]
-                dv_neg_idx = np.where(dv_spike_train[start_time:end_time] < 0)[0]
+                    fig, ax = plt.subplots(3, 1, figsize=(10, 9))
 
-                ax[1].eventplot(time[dm_pos_idx], color="green", lineoffsets=2.0, linelengths=0.4, label="DM ON")
-                ax[1].eventplot(time[dm_neg_idx], color='black', lineoffsets=2.0, linelengths=0.4, label="DM OFF")
-                ax[1].eventplot(time[dv_pos_idx], color="red", lineoffsets=0.0, linelengths=0.4, label="DV ON")
-                ax[1].eventplot(time[dv_neg_idx], color='blue', lineoffsets=0.0, linelengths=0.4, label="DV OFF")
-                ax[1].axvline(x=shifted_detected_idx, color="orange", linestyle="--", label="Detected Spike Time")
-                ax[1].legend(loc="lower left")
+                    ax[0].plot(filtered_signal_aligned, color='b', label="V(t)")
+                    ax[0].axvline(x=36 - relative_idx, color='r', linestyle='--', label="Spk Detected Idx")
+                    ax[0].axvline(x=36, color='g', linestyle='--', label="Aligned Idx")
+                    
+                    ax[1].stem(spk_train_dm_aligned, linefmt='b-', markerfmt='go', basefmt='r-', label=r"$S_{dm}(t)$")
+                    ax[1].axvline(x=36 - relative_idx, color='r', linestyle='--', label="Spk Detected Idx")
+                    ax[1].axvline(x=36, color='g', linestyle='--', label="Aligned Idx")
+                    
+                    ax[2].stem(spk_train_dv_aligned, linefmt='b-', markerfmt='go', basefmt='r-', label=r"$S_{dv}(t)$")
+                    ax[2].axvline(x=36 - relative_idx, color='r', linestyle='--', label="Spk Detected Idx")
+                    ax[2].axvline(x=36, color='g', linestyle='--', label="Aligned Idx")
 
-                ax[0].set_xlim(time[0], time[-1])
-                ax[1].set_xlim(time[0], time[-1])
+                    ax[0].legend(loc="upper right")
+                    ax[1].legend(loc="upper right")
+                    ax[2].legend(loc="upper right")
 
-                ax[0].minorticks_on()
-                ax[1].minorticks_on()
+                    ax[0].set_xlim([0, filtered_signal_aligned.shape[0] - 1])
+                    ax[1].set_xlim([0, filtered_signal_aligned.shape[0] - 1])
+                    ax[2].set_xlim([0, filtered_signal_aligned.shape[0] - 1])
 
-                ax[0].grid(which="both", linestyle="--", linewidth=0.5, alpha=0.5, color="gray")
-                ax[1].grid(which="both", linestyle="--", linewidth=0.5, alpha=0.5, color="gray")
+                    ax[0].minorticks_on()
+                    ax[0].grid(which="both", linestyle="--", linewidth=0.5, alpha=0.5, color="gray")
+                    ax[1].minorticks_on()
+                    ax[1].grid(which="both", linestyle="--", linewidth=0.5, alpha=0.5, color="gray")
+                    ax[2].minorticks_on()
+                    ax[2].grid(which="both", linestyle="--", linewidth=0.5, alpha=0.5, color="gray")
 
-                plt.tight_layout()
-                plt.savefig(f"./spike_alignment/{filename[:-4]}/spike_time_idx_{spike_time_idx}.jpg", dpi=300)
-                plt.close()
-            ############ End of verification
-
+                    plt.tight_layout()
+                    plt.savefig(f"{current_file_recon_path}train_{i}_class_{spike_class_label[i].item()}.jpg", dpi=300)
+                    plt.close()
             
