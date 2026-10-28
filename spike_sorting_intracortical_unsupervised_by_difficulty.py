@@ -22,6 +22,7 @@ from utils import (
     IntracorticalDataset,
     IntracorticalDatasetForDEC,
     dv_to_lif_spike_gen,
+    find_alignment_point,
     generate_event_stream_dm,
     generate_event_stream_lif,
     huber_vr,
@@ -120,14 +121,14 @@ def train_clustering(
 
     ite = 0 # iteration counter for updating target distribution. by minibatch instead of epoch
     for epoch in tqdm(range(NUM_EPOCHS)):
-        if ite % 140 == 0: # try refreshing every 5-10 epochs
-            ae.eval()
-            net.eval()
-            with torch.no_grad():
-                target_distribution_data = target_distribution_data.to(DEVICE)
-                latent_representation, reconstructed, _ = ae(target_distribution_data)
-                cluster_assignment = net(latent_representation)
-            target = target_distribution(cluster_assignment).detach()
+        # if epoch % 5 == 0: # try refreshing every 5-10 epochs
+        #     ae.eval()
+        #     net.eval()
+        #     with torch.no_grad():
+        #         target_distribution_data = target_distribution_data.to(DEVICE)
+        #         latent_representation, reconstructed, _ = ae(target_distribution_data)
+        #         cluster_assignment = net(latent_representation)
+        #     target = target_distribution(cluster_assignment).detach()
 
         net.train()
         ae.train()
@@ -135,6 +136,18 @@ def train_clustering(
         total_recon_loss = 0.0
         total_cluster_loss = 0.0
         for data, label, idx in train_loader:
+            if ite % 140 == 0: # try refreshing every 140 minibatches like the original IDEC paper
+                ae.eval()
+                net.eval()
+                with torch.no_grad():
+                    target_distribution_data = target_distribution_data.to(DEVICE)
+                    latent_representation, reconstructed, _ = ae(target_distribution_data)
+                    cluster_assignment = net(latent_representation)
+                target = target_distribution(cluster_assignment).detach()
+
+                net.train()
+                ae.train()
+
             data = data.to(DEVICE)  # shape (batch_size, seq_len)
             label = label.to(DEVICE)  # shape (batch_size)
             # print(f"data shape: {data.shape}, label shape: {label.shape}")
@@ -417,7 +430,7 @@ if __name__ == "__main__":
     while line_no < len(detection_idx_lines):
         line = detection_idx_lines[line_no]
         if "Filename: " in line:
-            filename = line.split("Filename: ")[1][:-2]
+            filename = line.split("Filename: ")[1][:-1]
             detection_idx_results_when_detected[filename] = []
             detection_idx_results_label_spike_time[filename] = []
         else:
@@ -547,22 +560,22 @@ if __name__ == "__main__":
             #     hidden_size=args.hidden_dim,
             #     latent_dim=args.latent_dim,
             # )
-            # ae = Conv1DLSTMAE(
-            #     seq_len=training_spikes_tensor.shape[1],
-            #     input_dim=1,
-            #     out_channels=32,
-            #     hidden_dim=args.hidden_dim,
-            #     latent_dim=args.latent_dim,
-            #     kernel_size=4,
-            #     kernel_stride=2,
-            #     padding=1,
-            # )
-            ae = Conv1DAE(
-                input_dim=1,
+            ae = Conv1DLSTMAE(
                 seq_len=training_spikes_tensor.shape[1],
-                hidden_size=(32, 64, 96),
+                input_dim=1,
+                out_channels=32,
+                hidden_dim=args.hidden_dim,
                 latent_dim=args.latent_dim,
+                kernel_size=4,
+                kernel_stride=2,
+                padding=1,
             )
+            # ae = Conv1DAE(
+            #     input_dim=1,
+            #     seq_len=training_spikes_tensor.shape[1],
+            #     hidden_size=(32, 64, 96),
+            #     latent_dim=args.latent_dim,
+            # )
             ae.to(DEVICE)
             test_ae_net = copy.deepcopy(ae)
             
@@ -738,22 +751,22 @@ if __name__ == "__main__":
                 #     hidden_size=args.hidden_dim,
                 #     latent_dim=args.latent_dim,
                 # )
-                # ae = Conv1DLSTMAE(
-                #     seq_len=training_spikes_tensor.shape[1],
-                #     input_dim=1,
-                #     out_channels=32,
-                #     hidden_dim=args.hidden_dim,
-                #     latent_dim=args.latent_dim,
-                #     kernel_size=4,
-                #     kernel_stride=2,
-                #     padding=1,
-                # )
-                ae = Conv1DAE(
-                    input_dim=1,
+                ae = Conv1DLSTMAE(
                     seq_len=training_spikes_tensor.shape[1],
-                    hidden_size=(32, 64, 96),
+                    input_dim=1,
+                    out_channels=32,
+                    hidden_dim=args.hidden_dim,
                     latent_dim=args.latent_dim,
+                    kernel_size=4,
+                    kernel_stride=2,
+                    padding=1,
                 )
+                # ae = Conv1DAE(
+                #     input_dim=1,
+                #     seq_len=training_spikes_tensor.shape[1],
+                #     hidden_size=(32, 64, 96),
+                #     latent_dim=args.latent_dim,
+                # )
                 ae.to(DEVICE)
                 test_ae_net = copy.deepcopy(ae)
                 

@@ -91,7 +91,7 @@ if __name__ == "__main__":
     while line_no < len(detection_idx_lines):
         line = detection_idx_lines[line_no]
         if "Filename: " in line:
-            filename = line.split("Filename: ")[1][:-2]
+            filename = line.split("Filename: ")[1][:-1]
             detection_idx_results_when_detected[filename] = []
             detection_idx_results_label_spike_time[filename] = []
         else:
@@ -173,7 +173,7 @@ if __name__ == "__main__":
 
                     idx_of_spike_detector = detected_spike_times[idx] - spike_times[i] + visualisation_window
                     idx_of_spike_label = spike_times[i] - spike_times[i] + visualisation_window
-    
+
                     # plot the signal about the label spike time
                     # generate a vertical line for when spike is detected
                     # plot the corresponding spike train

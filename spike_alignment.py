@@ -1,21 +1,20 @@
-import numpy as np
-import matplotlib.pyplot as plt
-
-import random
 import os
+import random
 from datetime import datetime
+
+import matplotlib.pyplot as plt
+import numpy as np
 from tqdm import tqdm
 
 from utils import (
     IntracorticalDataset,
-    load_dataset_intracortical,
-    train_test_split_spike_detection,
     create_training_dataset_spike_detection,
     dv_to_lif_spike_gen,
+    find_alignment_point,
     generate_event_stream_dm,
+    load_dataset_intracortical,
+    train_test_split_spike_detection,
 )
-
-from model import SpikeDetector
 
 if __name__ == "__main__":
     """
@@ -46,7 +45,7 @@ if __name__ == "__main__":
     while line_no < len(detection_idx_lines):
         line = detection_idx_lines[line_no]
         if "Filename: " in line:
-            filename = line.split("Filename: ")[1][:-2]
+            filename = line.split("Filename: ")[1][:-1]
             detection_idx_results[filename] = []
         else:
             temp = line.split(",")

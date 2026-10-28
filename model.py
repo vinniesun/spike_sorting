@@ -1077,7 +1077,11 @@ class Conv1DLSTMAE(nn.Module):
         _, (h, c) = self.lstm_encoder(x) # h/c shape: (1, b, hidden_dim)
         h = h.squeeze(0) # shape: (b, hidden_dim)
 
-        out = self.bn(self.to_latent(h))
+        out = self.bn(self.to_latent(h)) # batchnorm only
+
+        # out = F.normalize(out, p=2, dim=1) # L2 normalize only
+        
+        # out = F.normalize(self.bn(self.to_latent(h)), p=2, dim=1) # batchnorm + L2 normalize
 
         return out
 

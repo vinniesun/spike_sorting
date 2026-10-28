@@ -427,3 +427,26 @@ def target_distribution(batch: torch.Tensor) -> torch.Tensor:
     """
     weight = (batch ** 2) / torch.sum(batch, 0)
     return (weight.t() / torch.sum(weight, 1)).t()
+
+def find_alignment_point(a: np.ndarray) -> int | None:
+    nz = np.flatnonzero(a)
+
+    if nz.size == 0:
+        return None
+
+    first_idx = nz[0]
+    polarity = a[first_idx]
+
+    # Find first occurrence of opposite polarity after first polarity starts
+    opposite = np.flatnonzero(a[first_idx:] == -polarity)
+
+    if opposite.size == 0:
+        # No opposite polarity exists, so return last occurrence of first polarity
+        same = np.flatnonzero(a == polarity)
+        return same[-1]
+
+    first_opposite_idx = first_idx + opposite[0]
+
+    # Return last occurrence of first polarity before opposite polarity
+    same_before_opposite = np.flatnonzero(a[:first_opposite_idx] == polarity)
+    return same_before_opposite[-1]

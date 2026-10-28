@@ -19,8 +19,6 @@ from utils import (
     dv_to_lif_spike_gen,
 )
 
-from model import SpikeDetector
-
 if __name__ == "__main__":
     """
         Dataset downloaded from: https://figshare.le.ac.uk/articles/dataset/Simulated_dataset/11897595?file=21819066
@@ -144,7 +142,8 @@ if __name__ == "__main__":
             while i <= spike_train.shape[0] and k < spike_times.shape[0]:
                 # if difficulty == "Difficult1" and noise_level == "005":
                 #     output = f"idx: {i:,} k: {k}, spike time: {spike_times[k]:,}, density of spikes in window: {np.count_nonzero(spike_train[i-examine_window_size:i])}, "
-                current_true_label_window_start, current_true_label_window_end = spike_times[k] - label_window_size, spike_times[k] + (3*label_window_size)
+                # current_true_label_window_start, current_true_label_window_end = spike_times[k] - label_window_size, spike_times[k] + (3*label_window_size)
+                current_true_label_window_start, current_true_label_window_end = spike_times[k] - 12, spike_times[k] + 12
 
                 count = np.count_nonzero(spike_train[i-examine_window_size:i])
                 ap_detected =  (count > spike_detection_threshold)
@@ -155,7 +154,7 @@ if __name__ == "__main__":
                     k += 1
                 elif ap_detected and within_window: # ap is detected and is within the true label window
                     with open(DETECTION_IDX, "a") as f:
-                        f.write(f"Detection idx: {i}, Spike time idx: {k}\n")
+                        f.write(f"Detection idx: {i-1}, Spike time idx: {k}\n") # i-1 because of array indexing does not include the ith element
                     tp += 1
                     k += 1
                     i += skip_forward_window_size # skip forward by 0.5ms to avoid multi-counting the same AP
