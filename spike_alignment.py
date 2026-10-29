@@ -63,7 +63,7 @@ if __name__ == "__main__":
     """
         Dataset downloaded from: https://figshare.le.ac.uk/articles/dataset/Simulated_dataset/11897595?file=21819066
     """
-
+    print(f"Number of CPU cores available: {cpu_count()}")
     filepath = "./intracortical_dataset/"
     reset_mechanism = "subtract" # "none", "subtract", "zero"
 
@@ -174,9 +174,10 @@ if __name__ == "__main__":
                     )
                     plot_tasks.append(task)
 
-            with Pool(processes=4) as pool:
-                tqdm(pool.imap_unordered(make_plot, plot_tasks), total=len(plot_tasks), desc=f"Saving {filename} spikes", leave=False, dynamic_ncols=True)
-
+            with Pool(processes=cpu_count() // 2) as pool:
+                list(
+                    tqdm(pool.imap_unordered(make_plot, plot_tasks), total=len(plot_tasks), desc=f"Saving {filename} spikes", leave=False, dynamic_ncols=True)
+                )
                     # fig, ax = plt.subplots(3, 1, figsize=(10, 9))
 
                     # ax[0].plot(filtered_signal_aligned, color='b', label="V(t)")
