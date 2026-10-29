@@ -1,5 +1,9 @@
 import os
 
+import matplotlib
+matplotlib.use("Agg")  # Important for multiprocessing / saving without GUI
+from multiprocessing import Pool, cpu_count
+
 import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
@@ -10,6 +14,49 @@ from utils import (
     generate_event_stream_dm,
     load_dataset_intracortical,
 )
+
+
+def make_plot(args):
+    (
+        filtered_signal_aligned,
+        spk_train_dm_aligned,
+        spk_train_dv_aligned,
+        relative_idx,
+        output_path,
+    ) = args
+
+    fig, ax = plt.subplots(3, 1, figsize=(10, 9))
+    
+    ax[0].plot(filtered_signal_aligned, color='b', label="V(t)")
+    ax[0].axvline(x=36 - relative_idx, color='r', linestyle='--', label="Spk Detected Idx")
+    ax[0].axvline(x=36, color='g', linestyle='--', label="Aligned Idx")
+    
+    ax[1].stem(spk_train_dm_aligned, linefmt='b-', markerfmt='go', basefmt='r-', label=r"$S_{dm}(t)$")
+    ax[1].axvline(x=36 - relative_idx, color='r', linestyle='--', label="Spk Detected Idx")
+    ax[1].axvline(x=36, color='g', linestyle='--', label="Aligned Idx")
+    
+    ax[2].stem(spk_train_dv_aligned, linefmt='b-', markerfmt='go', basefmt='r-', label=r"$S_{dv}(t)$")
+    ax[2].axvline(x=36 - relative_idx, color='r', linestyle='--', label="Spk Detected Idx")
+    ax[2].axvline(x=36, color='g', linestyle='--', label="Aligned Idx")
+    
+    ax[0].legend(loc="upper right")
+    ax[1].legend(loc="upper right")
+    ax[2].legend(loc="upper right")
+    
+    ax[0].set_xlim([0, filtered_signal_aligned.shape[0] - 1])
+    ax[1].set_xlim([0, filtered_signal_aligned.shape[0] - 1])
+    ax[2].set_xlim([0, filtered_signal_aligned.shape[0] - 1])
+    
+    ax[0].minorticks_on()
+    ax[0].grid(which="both", linestyle="--", linewidth=0.5, alpha=0.5, color="gray")
+    ax[1].minorticks_on()
+    ax[1].grid(which="both", linestyle="--", linewidth=0.5, alpha=0.5, color="gray")
+    ax[2].minorticks_on()
+    ax[2].grid(which="both", linestyle="--", linewidth=0.5, alpha=0.5, color="gray")
+    
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
 
 if __name__ == "__main__":
     """
@@ -29,7 +76,7 @@ if __name__ == "__main__":
 
     dm_threshold = 0.2
 
-    alignment_window_half_dim = 12 # 0.5ms
+    alignment_window_half_dim = 10 # 0.5ms seems too large. Try 0.33ms/8 idx. seems too small. trying 10
 
     DETECTION_IDX = "Intracortical_Spike_Detection_IDX.txt"
     VISUALISATION_DIR = "./post_alignment_plots/"
@@ -88,8 +135,7 @@ if __name__ == "__main__":
 
             detected_spikes = np.array(detection_idx_results_label_spike_time[filename])
             detected_spike_times = np.array(detection_idx_results_when_detected[filename])
-            all_spike_signals = {i: [] for i in spike_classes}
-            all_spk_trains = {i: [] for i in spike_classes}
+            plot_tasks = []
             for i in tqdm(range(len(spike_times))):
                 if i in detected_spikes:
                     idx = np.where(detected_spikes == i)[0][0]
@@ -116,36 +162,50 @@ if __name__ == "__main__":
                     spk_train_dm_aligned = spike_train_dm[new_idx_of_spike_detector - 36 : new_idx_of_spike_detector + 36]
                     spk_train_dv_aligned = spike_train_dv[new_idx_of_spike_detector - 36 : new_idx_of_spike_detector + 36]
 
-                    fig, ax = plt.subplots(3, 1, figsize=(10, 9))
+                    output_path = f"{current_file_recon_path}train_{i}_class_{spike_class_label[i].item()}.jpg"
 
-                    ax[0].plot(filtered_signal_aligned, color='b', label="V(t)")
-                    ax[0].axvline(x=36 - relative_idx, color='r', linestyle='--', label="Spk Detected Idx")
-                    ax[0].axvline(x=36, color='g', linestyle='--', label="Aligned Idx")
+                    task = (
+                        filtered_signal_aligned,
+                        spk_train_dm_aligned,
+                        spk_train_dv_aligned,
+                        relative_idx,
+                        output_path,
+                    )
+                    plot_tasks.append(task)
+
+                    with Pool(processes=4) as pool:
+                        tqdm(pool.imap_unordered(make_plot, plot_tasks), total=len(plot_tasks), desc=f"Saving {filename} spikes", leave=False, dynamic_ncols=True)
+
+                    # fig, ax = plt.subplots(3, 1, figsize=(10, 9))
+
+                    # ax[0].plot(filtered_signal_aligned, color='b', label="V(t)")
+                    # ax[0].axvline(x=36 - relative_idx, color='r', linestyle='--', label="Spk Detected Idx")
+                    # ax[0].axvline(x=36, color='g', linestyle='--', label="Aligned Idx")
                     
-                    ax[1].stem(spk_train_dm_aligned, linefmt='b-', markerfmt='go', basefmt='r-', label=r"$S_{dm}(t)$")
-                    ax[1].axvline(x=36 - relative_idx, color='r', linestyle='--', label="Spk Detected Idx")
-                    ax[1].axvline(x=36, color='g', linestyle='--', label="Aligned Idx")
+                    # ax[1].stem(spk_train_dm_aligned, linefmt='b-', markerfmt='go', basefmt='r-', label=r"$S_{dm}(t)$")
+                    # ax[1].axvline(x=36 - relative_idx, color='r', linestyle='--', label="Spk Detected Idx")
+                    # ax[1].axvline(x=36, color='g', linestyle='--', label="Aligned Idx")
                     
-                    ax[2].stem(spk_train_dv_aligned, linefmt='b-', markerfmt='go', basefmt='r-', label=r"$S_{dv}(t)$")
-                    ax[2].axvline(x=36 - relative_idx, color='r', linestyle='--', label="Spk Detected Idx")
-                    ax[2].axvline(x=36, color='g', linestyle='--', label="Aligned Idx")
+                    # ax[2].stem(spk_train_dv_aligned, linefmt='b-', markerfmt='go', basefmt='r-', label=r"$S_{dv}(t)$")
+                    # ax[2].axvline(x=36 - relative_idx, color='r', linestyle='--', label="Spk Detected Idx")
+                    # ax[2].axvline(x=36, color='g', linestyle='--', label="Aligned Idx")
 
-                    ax[0].legend(loc="upper right")
-                    ax[1].legend(loc="upper right")
-                    ax[2].legend(loc="upper right")
+                    # ax[0].legend(loc="upper right")
+                    # ax[1].legend(loc="upper right")
+                    # ax[2].legend(loc="upper right")
 
-                    ax[0].set_xlim([0, filtered_signal_aligned.shape[0] - 1])
-                    ax[1].set_xlim([0, filtered_signal_aligned.shape[0] - 1])
-                    ax[2].set_xlim([0, filtered_signal_aligned.shape[0] - 1])
+                    # ax[0].set_xlim([0, filtered_signal_aligned.shape[0] - 1])
+                    # ax[1].set_xlim([0, filtered_signal_aligned.shape[0] - 1])
+                    # ax[2].set_xlim([0, filtered_signal_aligned.shape[0] - 1])
 
-                    ax[0].minorticks_on()
-                    ax[0].grid(which="both", linestyle="--", linewidth=0.5, alpha=0.5, color="gray")
-                    ax[1].minorticks_on()
-                    ax[1].grid(which="both", linestyle="--", linewidth=0.5, alpha=0.5, color="gray")
-                    ax[2].minorticks_on()
-                    ax[2].grid(which="both", linestyle="--", linewidth=0.5, alpha=0.5, color="gray")
+                    # ax[0].minorticks_on()
+                    # ax[0].grid(which="both", linestyle="--", linewidth=0.5, alpha=0.5, color="gray")
+                    # ax[1].minorticks_on()
+                    # ax[1].grid(which="both", linestyle="--", linewidth=0.5, alpha=0.5, color="gray")
+                    # ax[2].minorticks_on()
+                    # ax[2].grid(which="both", linestyle="--", linewidth=0.5, alpha=0.5, color="gray")
 
-                    plt.tight_layout()
-                    plt.savefig(f"{current_file_recon_path}train_{i}_class_{spike_class_label[i].item()}.jpg", dpi=300)
-                    plt.close()
+                    # plt.tight_layout()
+                    # plt.savefig(f"{current_file_recon_path}train_{i}_class_{spike_class_label[i].item()}.jpg", dpi=300)
+                    # plt.close()
             

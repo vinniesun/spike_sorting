@@ -459,9 +459,10 @@ def find_alignment_point(a: np.ndarray) -> int | None:
 
     first_idx = nz[0]
     polarity = np.sign(a[first_idx])
-
     # Find first occurrence of opposite polarity after first polarity starts
     opposite = np.flatnonzero(np.sign(a) == -polarity)[0]
+    if opposite.size == 0:
+        return first_idx
 
     same = np.flatnonzero(np.sign(a[:opposite]) == polarity)[-1]
 
