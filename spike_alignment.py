@@ -43,6 +43,7 @@ def make_plot(args):
     ax[1].legend(loc="upper right")
     ax[2].legend(loc="upper right")
     
+    ax[0].set_ylim([-2.0, 2.0])
     ax[0].set_xlim([0, filtered_signal_aligned.shape[0] - 1])
     ax[1].set_xlim([0, filtered_signal_aligned.shape[0] - 1])
     ax[2].set_xlim([0, filtered_signal_aligned.shape[0] - 1])
@@ -56,7 +57,7 @@ def make_plot(args):
     
     plt.tight_layout()
     plt.savefig(output_path, dpi=300)
-    plt.close()
+    plt.close(fig)
 
 if __name__ == "__main__":
     """
@@ -76,7 +77,7 @@ if __name__ == "__main__":
 
     dm_threshold = 0.2
 
-    alignment_window_half_dim = 10 # 0.5ms seems too large. Try 0.33ms/8 idx. seems too small. trying 10
+    alignment_window_half_dim = 12 # 0.5ms seems too large. Try 0.33ms/8 idx. seems too small. trying 10
 
     DETECTION_IDX = "Intracortical_Spike_Detection_IDX.txt"
     VISUALISATION_DIR = "./post_alignment_plots/"
@@ -106,8 +107,6 @@ if __name__ == "__main__":
 
     for difficulty in ["Difficult1", "Difficult2"]:
         for noise_level in ["005", "01", "015", "02"]:
-    # for difficulty in ["Difficult1", "Difficult2"]:
-    #     for noise_level in ["005", "01", "015", "02"]:
             filename = f"C_{difficulty}_noise{noise_level}.mat"
 
             current_file_recon_path = VISUALISATION_DIR + filename[:-4] + "/"
@@ -175,8 +174,8 @@ if __name__ == "__main__":
                     )
                     plot_tasks.append(task)
 
-                    with Pool(processes=4) as pool:
-                        tqdm(pool.imap_unordered(make_plot, plot_tasks), total=len(plot_tasks), desc=f"Saving {filename} spikes", leave=False, dynamic_ncols=True)
+            with Pool(processes=4) as pool:
+                tqdm(pool.imap_unordered(make_plot, plot_tasks), total=len(plot_tasks), desc=f"Saving {filename} spikes", leave=False, dynamic_ncols=True)
 
                     # fig, ax = plt.subplots(3, 1, figsize=(10, 9))
 
