@@ -428,42 +428,36 @@ def target_distribution(batch: torch.Tensor) -> torch.Tensor:
     weight = (batch ** 2) / torch.sum(batch, 0)
     return (weight.t() / torch.sum(weight, 1)).t()
 
-# def find_alignment_point(a: np.ndarray) -> int | None:
-#     nz = np.flatnonzero(a)
-
-#     if nz.size == 0:
-#         return None
-
-#     first_idx = nz[0]
-#     polarity = a[first_idx]
-
-#     # Find first occurrence of opposite polarity after first polarity starts
-#     opposite = np.flatnonzero(a[first_idx:] == -polarity)
-
-#     if opposite.size == 0:
-#         # No opposite polarity exists, so return last occurrence of first polarity
-#         same = np.flatnonzero(a == polarity)
-#         return same[-1]
-
-#     first_opposite_idx = first_idx + opposite[0]
-
-#     # Return last occurrence of first polarity before opposite polarity
-#     same_before_opposite = np.flatnonzero(a[:first_opposite_idx] == polarity)
-#     return same_before_opposite[-1]
-
 def find_alignment_point(a: np.ndarray) -> int | None:
     nz = np.flatnonzero(a)
 
     if nz.size == 0:
         return None
 
+    # check the gap between indices at the start. if the gap is too big, it's probably noise that need to be ignored.
+    truncate = False
+    if nz[1] - nz[0] > 5:  # gap threshold, can be adjusted based on the data characteristics
+        nz = nz[1:]
+        truncate = True
+
     first_idx = nz[0]
     polarity = np.sign(a[first_idx])
     # Find first occurrence of opposite polarity after first polarity starts
-    opposite = np.flatnonzero(np.sign(a) == -polarity)[0]
+    if truncate:
+        test = np.zeros_like(a)
+        test[first_idx:] = a[first_idx:]
+        opposite = np.flatnonzero(np.sign(test) == -polarity)
+    else:
+        opposite = np.flatnonzero(np.sign(a) == -polarity)
+    
     if opposite.size == 0:
         return first_idx
-
-    same = np.flatnonzero(np.sign(a[:opposite]) == polarity)[-1]
+    else:
+        opposite = opposite[0]
+    
+    if truncate:
+        same = np.flatnonzero(np.sign(test[:opposite]) == polarity)[-1]
+    else:
+        same = np.flatnonzero(np.sign(a[:opposite]) == polarity)[-1]
 
     return same

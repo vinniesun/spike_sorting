@@ -136,7 +136,7 @@ def train_clustering(
         total_recon_loss = 0.0
         total_cluster_loss = 0.0
         for data, label, idx in train_loader:
-            if ite % 140 == 0: # try refreshing every 140 minibatches like the original IDEC paper
+            if ite % 8 == 0: # try refreshing every 140 minibatches like the original IDEC paper for mnist, seems too large
                 ae.eval()
                 net.eval()
                 with torch.no_grad():

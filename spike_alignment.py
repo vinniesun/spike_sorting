@@ -106,6 +106,8 @@ if __name__ == "__main__":
 
     for difficulty in ["Difficult1", "Difficult2"]:
         for noise_level in ["005", "01", "015", "02"]:
+    # for difficulty in ["Difficult1", "Difficult2"]:
+    #     for noise_level in ["005", "01", "015", "02"]:
             filename = f"C_{difficulty}_noise{noise_level}.mat"
 
             current_file_recon_path = VISUALISATION_DIR + filename[:-4] + "/"
