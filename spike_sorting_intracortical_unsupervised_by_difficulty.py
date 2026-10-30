@@ -415,6 +415,7 @@ if __name__ == "__main__":
     lif_tau = 1 * (1 / 24000)
     detection_window_size = 12  # original 8 
     sorting_window_size = 48    # original 32. Try 47
+    alignment_window_half_dim = 12 # 0.5ms seems too large. Try 0.33ms/8 idx. seems too small. trying 10
 
     DETECTION_IDX = "Intracortical_Spike_Detection_IDX.txt"
 
@@ -473,7 +474,18 @@ if __name__ == "__main__":
                     spike_train[event_stream[:, 0].astype(int)] = (
                         event_stream[:, 1] - event_stream[:, 2]
                     )
+                    spike_train_dm = spike_train.copy()
                 elif encoder == "dv":
+                    on_threshold = encoder_threshold
+                    off_threshold = -encoder_threshold
+                    event_stream = generate_event_stream_dm(
+                        filtered_signal, on_threshold, off_threshold
+                    )
+                    spike_train_dm = np.zeros_like(signal)
+                    spike_train_dm[event_stream[:, 0].astype(int)] = (
+                        event_stream[:, 1] - event_stream[:, 2]
+                    )
+
                     dv_u_hist, spike_train, dv_time_lif = dv_to_lif_spike_gen(
                         signal=filtered_signal,
                         lif_threshold=encoder_threshold,
@@ -482,6 +494,16 @@ if __name__ == "__main__":
                         reset_mechanism=reset_mechanism,
                     )
                 elif encoder == "lif":
+                    on_threshold = encoder_threshold
+                    off_threshold = -encoder_threshold
+                    event_stream = generate_event_stream_dm(
+                        filtered_signal, on_threshold, off_threshold
+                    )
+                    spike_train_dm = np.zeros_like(signal)
+                    spike_train_dm[event_stream[:, 0].astype(int)] = (
+                        event_stream[:, 1] - event_stream[:, 2]
+                    )
+
                     # for lif, the threshold is: 0.5, 0.8, 1.2, 1.5, 1.8, 2.0, 2.5, 3.0
                     spike_train = generate_event_stream_lif(
                         filtered_signal,
@@ -491,6 +513,16 @@ if __name__ == "__main__":
                         if_reconstruct=False
                     )
                 elif encoder == "none":
+                    on_threshold = encoder_threshold
+                    off_threshold = -encoder_threshold
+                    event_stream = generate_event_stream_dm(
+                        filtered_signal, on_threshold, off_threshold
+                    )
+                    spike_train_dm = np.zeros_like(signal)
+                    spike_train_dm[event_stream[:, 0].astype(int)] = (
+                        event_stream[:, 1] - event_stream[:, 2]
+                    )
+
                     spike_train = filtered_signal
                 else:
                     raise ValueError("Invalid encoder type. Choose either 'dm' or 'dv' or 'lif' or 'none'.")
@@ -504,18 +536,56 @@ if __name__ == "__main__":
                 for i in range(len(spike_times)):
                     if i in detected_spikes:
                         idx = np.where(detected_spikes == i)[0][0]
+                        # all_spike_signals[spike_class_label[i]].append(
+                        #     filtered_signal[
+                        #         detected_spike_times[idx]
+                        #         - detection_window_size : detected_spike_times[idx]
+                        #         + sorting_window_size
+                        #         - detection_window_size
+                        #     ]
+                        # )
+                        # all_spk_trains[spike_class_label[i]].append(
+                        #     spike_train[
+                        #         detected_spike_times[idx]
+                        #         - detection_window_size : detected_spike_times[idx]
+                        #         + sorting_window_size
+                        #         - detection_window_size
+                        #     ]
+                        # )
+                        # First get the detection index 
+                        idx_of_spike_detector = detected_spike_times[idx]
+                        idx_of_spike_label = spike_times[i]
+                        
+                        # Then extract the window to align
+                        # We want the detected index point to sit right in the middle of the window
+                        for_alignment_window = spike_train_dm[idx_of_spike_detector - alignment_window_half_dim : idx_of_spike_detector + alignment_window_half_dim + 1]
+                        
+                        # Find the alignment point
+                        alignment_point = find_alignment_point(for_alignment_window)
+                        
+                        # Get the relative index of idx_of_spike_detector with respect to for_alignment_window
+                        relative_idx = alignment_point - alignment_window_half_dim
+                        
+                        # Get the new aligned index of the spike detector
+                        new_idx_of_spike_detector = idx_of_spike_detector + relative_idx
+
+                        filtered_signal_aligned = filtered_signal[
+                            new_idx_of_spike_detector - 36 : new_idx_of_spike_detector + 36
+                        ]
+                        spk_train_dm_aligned = spike_train_dm[new_idx_of_spike_detector - 36 : new_idx_of_spike_detector + 36]
+
                         all_spike_signals[spike_class_label[i]].append(
                             filtered_signal[
-                                detected_spike_times[idx]
-                                - detection_window_size : detected_spike_times[idx]
+                                new_idx_of_spike_detector
+                                - detection_window_size : new_idx_of_spike_detector
                                 + sorting_window_size
                                 - detection_window_size
                             ]
                         )
                         all_spk_trains[spike_class_label[i]].append(
                             spike_train[
-                                detected_spike_times[idx]
-                                - detection_window_size : detected_spike_times[idx]
+                                new_idx_of_spike_detector
+                                - detection_window_size : new_idx_of_spike_detector
                                 + sorting_window_size
                                 - detection_window_size
                             ]
@@ -672,7 +742,18 @@ if __name__ == "__main__":
                     spike_train[event_stream[:, 0].astype(int)] = (
                         event_stream[:, 1] - event_stream[:, 2]
                     )
+                    spike_train_dm = spike_train.copy()
                 elif encoder == "dv":
+                    on_threshold = encoder_threshold
+                    off_threshold = -encoder_threshold
+                    event_stream = generate_event_stream_dm(
+                        filtered_signal, on_threshold, off_threshold
+                    )
+                    spike_train_dm = np.zeros_like(signal)
+                    spike_train_dm[event_stream[:, 0].astype(int)] = (
+                        event_stream[:, 1] - event_stream[:, 2]
+                    )
+                
                     dv_u_hist, spike_train, dv_time_lif = dv_to_lif_spike_gen(
                         signal=filtered_signal,
                         lif_threshold=encoder_threshold,
@@ -681,6 +762,16 @@ if __name__ == "__main__":
                         reset_mechanism=reset_mechanism,
                     )
                 elif encoder == "lif":
+                    on_threshold = encoder_threshold
+                    off_threshold = -encoder_threshold
+                    event_stream = generate_event_stream_dm(
+                        filtered_signal, on_threshold, off_threshold
+                    )
+                    spike_train_dm = np.zeros_like(signal)
+                    spike_train_dm[event_stream[:, 0].astype(int)] = (
+                        event_stream[:, 1] - event_stream[:, 2]
+                    )
+                
                     # for lif, the threshold is: 0.5, 0.8, 1.2, 1.5, 1.8, 2.0, 2.5, 3.0
                     spike_train = generate_event_stream_lif(
                         filtered_signal,
@@ -690,6 +781,16 @@ if __name__ == "__main__":
                         if_reconstruct=False
                     )
                 elif encoder == "none":
+                    on_threshold = encoder_threshold
+                    off_threshold = -encoder_threshold
+                    event_stream = generate_event_stream_dm(
+                        filtered_signal, on_threshold, off_threshold
+                    )
+                    spike_train_dm = np.zeros_like(signal)
+                    spike_train_dm[event_stream[:, 0].astype(int)] = (
+                        event_stream[:, 1] - event_stream[:, 2]
+                    )
+                
                     spike_train = filtered_signal
                 else:
                     raise ValueError("Invalid encoder type. Choose either 'dm' or 'dv' or 'lif' or 'none'.")
@@ -703,18 +804,56 @@ if __name__ == "__main__":
                 for i in range(len(spike_times)):
                     if i in detected_spikes:
                         idx = np.where(detected_spikes == i)[0][0]
+                        # all_spike_signals[spike_class_label[i]].append(
+                        #     filtered_signal[
+                        #         detected_spike_times[idx]
+                        #         - detection_window_size : detected_spike_times[idx]
+                        #         + sorting_window_size
+                        #         - detection_window_size
+                        #     ]
+                        # )
+                        # all_spk_trains[spike_class_label[i]].append(
+                        #     spike_train[
+                        #         detected_spike_times[idx]
+                        #         - detection_window_size : detected_spike_times[idx]
+                        #         + sorting_window_size
+                        #         - detection_window_size
+                        #     ]
+                        # )
+                        # First get the detection index 
+                        idx_of_spike_detector = detected_spike_times[idx]
+                        idx_of_spike_label = spike_times[i]
+                
+                        # Then extract the window to align
+                        # We want the detected index point to sit right in the middle of the window
+                        for_alignment_window = spike_train_dm[idx_of_spike_detector - alignment_window_half_dim : idx_of_spike_detector + alignment_window_half_dim + 1]
+                
+                        # Find the alignment point
+                        alignment_point = find_alignment_point(for_alignment_window)
+                
+                        # Get the relative index of idx_of_spike_detector with respect to for_alignment_window
+                        relative_idx = alignment_point - alignment_window_half_dim
+                
+                        # Get the new aligned index of the spike detector
+                        new_idx_of_spike_detector = idx_of_spike_detector + relative_idx
+                
+                        filtered_signal_aligned = filtered_signal[
+                            new_idx_of_spike_detector - 36 : new_idx_of_spike_detector + 36
+                        ]
+                        spk_train_dm_aligned = spike_train_dm[new_idx_of_spike_detector - 36 : new_idx_of_spike_detector + 36]
+                
                         all_spike_signals[spike_class_label[i]].append(
                             filtered_signal[
-                                detected_spike_times[idx]
-                                - detection_window_size : detected_spike_times[idx]
+                                new_idx_of_spike_detector
+                                - detection_window_size : new_idx_of_spike_detector
                                 + sorting_window_size
                                 - detection_window_size
                             ]
                         )
                         all_spk_trains[spike_class_label[i]].append(
                             spike_train[
-                                detected_spike_times[idx]
-                                - detection_window_size : detected_spike_times[idx]
+                                new_idx_of_spike_detector
+                                - detection_window_size : new_idx_of_spike_detector
                                 + sorting_window_size
                                 - detection_window_size
                             ]
