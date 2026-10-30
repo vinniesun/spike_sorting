@@ -465,8 +465,8 @@ if __name__ == "__main__":
                 ) = load_dataset_intracortical(filepath, filename)
                 
                 if encoder == "dm":
-                    on_threshold = encoder_threshold
-                    off_threshold = -encoder_threshold
+                    on_threshold = 0.2
+                    off_threshold = -0.2
                     event_stream = generate_event_stream_dm(
                         filtered_signal, on_threshold, off_threshold
                     )
@@ -476,8 +476,8 @@ if __name__ == "__main__":
                     )
                     spike_train_dm = spike_train.copy()
                 elif encoder == "dv":
-                    on_threshold = encoder_threshold
-                    off_threshold = -encoder_threshold
+                    on_threshold = 0.2
+                    off_threshold = -0.2
                     event_stream = generate_event_stream_dm(
                         filtered_signal, on_threshold, off_threshold
                     )
@@ -494,8 +494,8 @@ if __name__ == "__main__":
                         reset_mechanism=reset_mechanism,
                     )
                 elif encoder == "lif":
-                    on_threshold = encoder_threshold
-                    off_threshold = -encoder_threshold
+                    on_threshold = 0.2
+                    off_threshold = -0.2
                     event_stream = generate_event_stream_dm(
                         filtered_signal, on_threshold, off_threshold
                     )
@@ -513,8 +513,8 @@ if __name__ == "__main__":
                         if_reconstruct=False
                     )
                 elif encoder == "none":
-                    on_threshold = encoder_threshold
-                    off_threshold = -encoder_threshold
+                    on_threshold = 0.2
+                    off_threshold = -0.2
                     event_stream = generate_event_stream_dm(
                         filtered_signal, on_threshold, off_threshold
                     )
@@ -733,8 +733,8 @@ if __name__ == "__main__":
                 ) = load_dataset_intracortical(filepath, filename)
         
                 if encoder == "dm":
-                    on_threshold = encoder_threshold
-                    off_threshold = -encoder_threshold
+                    on_threshold = 0.2
+                    off_threshold = -0.2
                     event_stream = generate_event_stream_dm(
                         filtered_signal, on_threshold, off_threshold
                     )
@@ -744,8 +744,8 @@ if __name__ == "__main__":
                     )
                     spike_train_dm = spike_train.copy()
                 elif encoder == "dv":
-                    on_threshold = encoder_threshold
-                    off_threshold = -encoder_threshold
+                    on_threshold = 0.2
+                    off_threshold = -0.2
                     event_stream = generate_event_stream_dm(
                         filtered_signal, on_threshold, off_threshold
                     )
@@ -762,8 +762,8 @@ if __name__ == "__main__":
                         reset_mechanism=reset_mechanism,
                     )
                 elif encoder == "lif":
-                    on_threshold = encoder_threshold
-                    off_threshold = -encoder_threshold
+                    on_threshold = 0.2
+                    off_threshold = -0.2
                     event_stream = generate_event_stream_dm(
                         filtered_signal, on_threshold, off_threshold
                     )
@@ -781,8 +781,8 @@ if __name__ == "__main__":
                         if_reconstruct=False
                     )
                 elif encoder == "none":
-                    on_threshold = encoder_threshold
-                    off_threshold = -encoder_threshold
+                    on_threshold = 0.2
+                    off_threshold = -0.2
                     event_stream = generate_event_stream_dm(
                         filtered_signal, on_threshold, off_threshold
                     )
