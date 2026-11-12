@@ -36,6 +36,69 @@ from utils import (
 )
 
 
+def augment_spike_windows(data: torch.Tensor) -> torch.Tensor:
+    """Apply mild timing and amplitude perturbations to spike windows."""
+    augmented = data.clone()
+    batch_size = augmented.shape[0]
+
+    shifts = torch.randint(-2, 3, (batch_size,), device=data.device)
+    shifted = torch.zeros_like(augmented)
+    for shift in range(-2, 3):
+        mask = shifts == shift
+        if not mask.any():
+            continue
+        if shift < 0:
+            shifted[mask, :shift] = augmented[mask, -shift:]
+        elif shift > 0:
+            shifted[mask, shift:] = augmented[mask, :-shift]
+        else:
+            shifted[mask] = augmented[mask]
+
+    amplitude = 1.0 + 0.05 * torch.randn(batch_size, 1, device=data.device)
+    event_mask = torch.rand_like(shifted) < 0.05
+    noise_scale = shifted.detach().std(dim=1, keepdim=True).clamp_min(1e-3)
+    noise = 0.01 * noise_scale * torch.randn_like(shifted)
+    return shifted * amplitude * (~event_mask) + noise
+
+
+def nt_xent_loss(
+    first: torch.Tensor,
+    second: torch.Tensor,
+    temperature: float = 0.2,
+) -> torch.Tensor:
+    """Compute the symmetric in-batch InfoNCE loss for two views."""
+    first = F.normalize(first, dim=1)
+    second = F.normalize(second, dim=1)
+    representations = torch.cat([first, second], dim=0)
+    logits = representations @ representations.T / temperature
+    logits.fill_diagonal_(-torch.inf)
+
+    batch_size = first.shape[0]
+    positive_indices = torch.arange(2 * batch_size, device=first.device)
+    positive_indices = (positive_indices + batch_size) % (2 * batch_size)
+    return F.cross_entropy(logits, positive_indices)
+
+
+def reconstruction_loss(reconstructed, data, loss_fn, args):
+    if args.acc_mode == "huber":
+        return loss_fn(reconstructed, data)
+    if args.acc_mode == "vr":
+        return loss_fn(reconstructed, data, tau=args.tau, dt=1 / 24000)
+    if args.acc_mode == "huber_vr":
+        return loss_fn(
+            reconstructed,
+            data,
+            event_weight=10.0,
+            zero_weight=1.0,
+            delta=1.0,
+            tau=args.tau,
+            dt=1 / 24000,
+        )
+    if args.acc_mode in {"vr_mae_count", "vr_mse"}:
+        return loss_fn(reconstructed, data, tau=args.tau, dt=1 / 24000)
+    return loss_fn(reconstructed, data)
+
+
 def train_ae(
     net,
     train_loader,
@@ -43,39 +106,58 @@ def train_ae(
     optimiser,
     loss_fn,
     args,
+    projection_head=None,
     scheduler=None,
 ):
     best_loss = float("inf")
     for epoch in tqdm(range(NUM_EPOCHS)):
         net.train()
         curr_loss = 0.0
+        curr_reconstruction_loss = 0.0
+        curr_contrastive_loss = 0.0
         for data, label in train_loader:
             data = data.to(DEVICE)  # shape (batch_size, seq_len)
             label = label.to(DEVICE)  # shape (batch_size)
-            # print(f"data shape: {data.shape}, label shape: {label.shape}")
-            
-            latent_representation, reconstructed, _ = net(data)
 
-            if args.acc_mode == "huber":
-                loss = loss_fn(reconstructed, data, event_weight=10.0, zero_weight=1.0, delta=1.0)
-            elif args.acc_mode == "vr":
-                loss = loss_fn(reconstructed, data, tau=args.tau, dt=1/24000) # tau of 10us
-            elif args.acc_mode == "huber_vr":
-                loss = loss_fn(reconstructed, data, event_weight=10.0, zero_weight=1.0, delta=1.0, tau=args.tau, dt=1/24000)
-            elif args.acc_mode == "vr_mae_count":  # noqa: SIM114
-                loss = loss_fn(reconstructed, data, tau=args.tau, dt=1/24000)
-            elif args.acc_mode == "vr_mse":
-                loss = loss_fn(reconstructed, data, tau=args.tau, dt=1/24000)
+            if args.pretrain_objective == "reconstruction":
+                first_view = data
+                second_view = None
             else:
-                loss = loss_fn(reconstructed, data)
+                first_view = augment_spike_windows(data)
+                second_view = augment_spike_windows(data)
+
+            latent_representation, reconstructed, _ = net(first_view)
+            current_reconstruction_loss = reconstruction_loss(
+                reconstructed, data, loss_fn, args
+            )
+            loss = current_reconstruction_loss
+
+            contrastive_loss = torch.zeros((), device=DEVICE)
+            if args.pretrain_objective in {"contrastive", "hybrid"}:
+                second_latent, _, _ = net(second_view)
+                first_projection = projection_head(latent_representation)
+                second_projection = projection_head(second_latent)
+                contrastive_loss = nt_xent_loss(
+                    first_projection,
+                    second_projection,
+                    temperature=args.contrastive_temperature,
+                )
+                loss = loss + args.contrastive_weight * contrastive_loss
+
             curr_loss += loss.item()
+            curr_reconstruction_loss += current_reconstruction_loss.item()
+            curr_contrastive_loss += contrastive_loss.item()
 
             optimiser.zero_grad()
             loss.backward()
             optimiser.step()
 
         with open(TRAINING_LOG_NAME, "a") as f:
-            f.write(f"\tEpoch {epoch + 1}/{NUM_EPOCHS}, Loss: {curr_loss:.4f}\n")
+            f.write(
+                f"\tEpoch {epoch + 1}/{NUM_EPOCHS}, Loss: {curr_loss:.4f}, "
+                f"Reconstruction Loss: {curr_reconstruction_loss:.4f}, "
+                f"Contrastive Loss: {curr_contrastive_loss:.4f}\n"
+            )
         # tqdm.write(f"Epoch {epoch+1}/{NUM_EPOCHS}, Training Accuracy: {train_acc:.4f}, Loss: {curr_loss:.4f}")
 
         test_loss = test_ae(
@@ -111,7 +193,7 @@ def train_clustering(
     best_cluster_loss = float("inf")
     best_acc = kmeans_acc
     dec_loss_fn = nn.KLDivLoss(reduction="batchmean")  # KL divergence loss for clustering
-    reconstruction_weight = 0.1
+    reconstruction_weight = 0.001
 
     torch.save(net.state_dict(), MODEL_FILENAME_ACC)
     torch.save(ae.state_dict(), MODEL_FILENAME_DEC_AE)
@@ -121,14 +203,14 @@ def train_clustering(
 
     ite = 0 # iteration counter for updating target distribution. by minibatch instead of epoch
     for epoch in tqdm(range(NUM_EPOCHS)):
-        # if epoch % 5 == 0: # try refreshing every 5-10 epochs
-        #     ae.eval()
-        #     net.eval()
-        #     with torch.no_grad():
-        #         target_distribution_data = target_distribution_data.to(DEVICE)
-        #         latent_representation, reconstructed, _ = ae(target_distribution_data)
-        #         cluster_assignment = net(latent_representation)
-        #     target = target_distribution(cluster_assignment).detach()
+        if epoch % 1 == 0: # try refreshing every 5-10 epochs
+            ae.eval()
+            net.eval()
+            with torch.no_grad():
+                target_distribution_data = target_distribution_data.to(DEVICE)
+                latent_representation, reconstructed, _ = ae(target_distribution_data)
+                cluster_assignment = net(latent_representation)
+            target = target_distribution(cluster_assignment).detach()
 
         net.train()
         ae.train()
@@ -136,17 +218,17 @@ def train_clustering(
         total_recon_loss = 0.0
         total_cluster_loss = 0.0
         for data, label, idx in train_loader:
-            if ite % 8 == 0: # try refreshing every 140 minibatches like the original IDEC paper for mnist, seems too large
-                ae.eval()
-                net.eval()
-                with torch.no_grad():
-                    target_distribution_data = target_distribution_data.to(DEVICE)
-                    latent_representation, reconstructed, _ = ae(target_distribution_data)
-                    cluster_assignment = net(latent_representation)
-                target = target_distribution(cluster_assignment).detach()
+            # if ite % 8 == 0: # try refreshing every 140 minibatches like the original IDEC paper for mnist, seems too large
+            #     ae.eval()
+            #     net.eval()
+            #     with torch.no_grad():
+            #         target_distribution_data = target_distribution_data.to(DEVICE)
+            #         latent_representation, reconstructed, _ = ae(target_distribution_data)
+            #         cluster_assignment = net(latent_representation)
+            #     target = target_distribution(cluster_assignment).detach()
 
-                net.train()
-                ae.train()
+            #     net.train()
+            #     ae.train()
 
             data = data.to(DEVICE)  # shape (batch_size, seq_len)
             label = label.to(DEVICE)  # shape (batch_size)
@@ -161,7 +243,8 @@ def train_clustering(
             cluster_loss = dec_loss_fn(cluster_assignment.log(), target[idx])  # KL divergence loss
 
             if args.acc_mode == "huber":
-                reconstruction_loss = loss_fn(reconstructed, data, event_weight=10.0, zero_weight=1.0, delta=1.0)
+                # reconstruction_loss = loss_fn(reconstructed, data, event_weight=10.0, zero_weight=1.0, delta=1.0)
+                reconstruction_loss = loss_fn(reconstructed, data)
             elif args.acc_mode == "vr":
                 reconstruction_loss = loss_fn(reconstructed, data, tau=args.tau, dt=1/24000) # tau of 10us
             elif args.acc_mode == "huber_vr":
@@ -294,7 +377,8 @@ def test_ae(
             latent_representation, reconstructed, _ = net(data)
 
             if args.acc_mode == "huber":
-                loss = loss_fn(reconstructed, data, event_weight=10.0, zero_weight=1.0, delta=1.0)
+                # loss = loss_fn(reconstructed, data, event_weight=10.0, zero_weight=1.0, delta=1.0)
+                loss = loss_fn(reconstructed, data)
             elif args.acc_mode == "vr":
                 loss = loss_fn(reconstructed, data, tau=args.tau, dt=1/24000) # tau of 10us
                 # loss = loss / loss.detach().clamp_min(1.0) # normalize the loss to avoid large gradients
@@ -312,7 +396,8 @@ def test_ae(
             total_loss += loss.item()
             total_samples += data.shape[0]
 
-    final_loss = total_loss / total_samples
+    # final_loss = total_loss / total_samples
+    final_loss = total_loss
     if final_test:
         # tqdm.write(f"Final Test Accuracy: {test_acc:.4f}")
         with open(TRAINING_LOG_NAME, "a") as f:
@@ -334,6 +419,25 @@ if __name__ == "__main__":
         default="ae",
         choices=["ae", "kmeans"],
         help="Model used for spike sorting",
+    )
+    parser.add_argument(
+        "--pretrain_objective",
+        type=str,
+        default="reconstruction",
+        choices=["reconstruction", "denoising", "contrastive", "hybrid"],
+        help="Objective used when pretraining the autoencoder",
+    )
+    parser.add_argument(
+        "--contrastive_weight",
+        type=float,
+        default=0.1,
+        help="Weight of the contrastive loss during hybrid pretraining",
+    )
+    parser.add_argument(
+        "--contrastive_temperature",
+        type=float,
+        default=0.2,
+        help="Temperature used by the in-batch contrastive loss",
     )
     parser.add_argument(
         "--acc_mode",
@@ -386,7 +490,7 @@ if __name__ == "__main__":
     if args.model_type == "ae":  # noqa: SIM114
         NUM_EPOCHS = 200
     elif args.model_type == "kmeans":
-        NUM_EPOCHS = 500
+        NUM_EPOCHS = 2000
 
     TRAINING_LOG_PATH = "./spike_sorting_training_log"
     if not os.path.exists(TRAINING_LOG_PATH):
@@ -413,7 +517,7 @@ if __name__ == "__main__":
     train_test_split_ratio = 0.7  # 70% training, 30% testing
     encoder_threshold = args.encoder_th
     lif_tau = 1 * (1 / 24000)
-    detection_window_size = 12  # original 8 
+    detection_window_size = 8  # original 8 and 12 
     sorting_window_size = 48    # original 32. Try 47
     alignment_window_half_dim = 12 # 0.5ms seems too large. Try 0.33ms/8 idx. seems too small. trying 10
 
@@ -446,6 +550,7 @@ if __name__ == "__main__":
     if args.model_type == "ae":
         for difficulty in ["Difficult1", "Difficult2", "Easy1", "Easy2"]:
             complete_train_data, complete_train_labels, complete_test_data, complete_test_labels = [], [], {}, {}
+            complete_test_data_for_train, complete_test_labels_for_train = [], []
             MODEL_FILENAME_LOSS = f"./intracortical_weights/spike_sorting_ae_{difficulty}_best_model_loss.pth"
             for noise_level in ["005", "01", "015", "02"]:
                 filename = f"C_{difficulty}_noise{noise_level}.mat"
@@ -536,60 +641,57 @@ if __name__ == "__main__":
                 for i in range(len(spike_times)):
                     if i in detected_spikes:
                         idx = np.where(detected_spikes == i)[0][0]
-                        # all_spike_signals[spike_class_label[i]].append(
-                        #     filtered_signal[
-                        #         detected_spike_times[idx]
-                        #         - detection_window_size : detected_spike_times[idx]
-                        #         + sorting_window_size
-                        #         - detection_window_size
-                        #     ]
-                        # )
-                        # all_spk_trains[spike_class_label[i]].append(
-                        #     spike_train[
-                        #         detected_spike_times[idx]
-                        #         - detection_window_size : detected_spike_times[idx]
-                        #         + sorting_window_size
-                        #         - detection_window_size
-                        #     ]
-                        # )
-                        # First get the detection index 
-                        idx_of_spike_detector = detected_spike_times[idx]
-                        idx_of_spike_label = spike_times[i]
-                        
-                        # Then extract the window to align
-                        # We want the detected index point to sit right in the middle of the window
-                        for_alignment_window = spike_train_dm[idx_of_spike_detector - alignment_window_half_dim : idx_of_spike_detector + alignment_window_half_dim + 1]
-                        
-                        # Find the alignment point
-                        alignment_point = find_alignment_point(for_alignment_window)
-                        
-                        # Get the relative index of idx_of_spike_detector with respect to for_alignment_window
-                        relative_idx = alignment_point - alignment_window_half_dim
-                        
-                        # Get the new aligned index of the spike detector
-                        new_idx_of_spike_detector = idx_of_spike_detector + relative_idx
-
-                        filtered_signal_aligned = filtered_signal[
-                            new_idx_of_spike_detector - 36 : new_idx_of_spike_detector + 36
-                        ]
-                        spk_train_dm_aligned = spike_train_dm[new_idx_of_spike_detector - 36 : new_idx_of_spike_detector + 36]
 
                         all_spike_signals[spike_class_label[i]].append(
                             filtered_signal[
-                                new_idx_of_spike_detector
-                                - detection_window_size : new_idx_of_spike_detector
+                                detected_spike_times[idx]
+                                - detection_window_size : detected_spike_times[idx]
                                 + sorting_window_size
                                 - detection_window_size
                             ]
                         )
                         all_spk_trains[spike_class_label[i]].append(
                             spike_train[
-                                new_idx_of_spike_detector
-                                - detection_window_size : new_idx_of_spike_detector
+                                detected_spike_times[idx]
+                                - detection_window_size : detected_spike_times[idx]
                                 + sorting_window_size
                                 - detection_window_size
                             ]
                         )
+
+                        # # First get the detection index 
+                        # idx_of_spike_detector = detected_spike_times[idx]
+                        # idx_of_spike_label = spike_times[i]
+                        
+                        # # Then extract the window to align
+                        # # We want the detected index point to sit right in the middle of the window
+                        # for_alignment_window = spike_train_dm[idx_of_spike_detector - alignment_window_half_dim : idx_of_spike_detector + alignment_window_half_dim + 1]
+                        
+                        # # Find the alignment point
+                        # alignment_point = find_alignment_point(for_alignment_window, version=3)
+                        
+                        # # # Get the relative index of idx_of_spike_detector with respect to for_alignment_window
+                        # # relative_idx = alignment_point - alignment_window_half_dim
+                        # # # Get the new aligned index of the spike detector
+                        # # new_idx_of_spike_detector = idx_of_spike_detector + relative_idx
+                        # new_idx_of_spike_detector = idx_of_spike_detector - alignment_point
+
+                        # all_spike_signals[spike_class_label[i]].append(
+                        #     filtered_signal[
+                        #         new_idx_of_spike_detector
+                        #         - detection_window_size : new_idx_of_spike_detector
+                        #         + sorting_window_size
+                        #         - detection_window_size
+                        #     ]
+                        # )
+                        # all_spk_trains[spike_class_label[i]].append(
+                        #     spike_train[
+                        #         new_idx_of_spike_detector
+                        #         - detection_window_size : new_idx_of_spike_detector
+                        #         + sorting_window_size
+                        #         - detection_window_size
+                        #     ]
+                        # )
                 
                 (
                     train_spk_train,
@@ -620,9 +722,13 @@ if __name__ == "__main__":
                 complete_train_labels.append(training_labels_tensor)
                 complete_test_data[filename[:-4]] = test_spikes_tensor
                 complete_test_labels[filename[:-4]] = test_labels_tensor
+                complete_test_data_for_train.append(test_spikes_tensor)
+                complete_test_labels_for_train.append(test_labels_tensor)
 
             complete_train_data = torch.cat(complete_train_data, dim=0)
             complete_train_labels = torch.cat(complete_train_labels, dim=0)
+            complete_test_data_for_train = torch.cat(complete_test_data_for_train, dim=0)
+            complete_test_labels_for_train = torch.cat(complete_test_labels_for_train, dim=0)
 
             # ae = LSTMAutoencoder(
             #     input_dim=1,
@@ -652,13 +758,23 @@ if __name__ == "__main__":
             optimiser = torch.optim.AdamW(
                 ae.parameters(), lr=1e-3, betas=(0.9, 0.999), weight_decay=1e-2
             )
+
+            projection_head = None
+            if args.pretrain_objective in {"contrastive", "hybrid"}:
+                projection_head = nn.Sequential(
+                    nn.Linear(args.latent_dim, args.latent_dim),
+                    nn.ReLU(),
+                    nn.Linear(args.latent_dim, args.latent_dim),
+                ).to(DEVICE)
+                optimiser.add_param_group({"params": projection_head.parameters()})
             
             if args.acc_mode == "mse":
                 loss_fn = nn.MSELoss()
             elif args.acc_mode == "mae":
                 loss_fn = nn.L1Loss()
             elif args.acc_mode == "huber":
-                loss_fn = weighted_huber_loss
+                # loss_fn = weighted_huber_loss
+                loss_fn = nn.HuberLoss()
             elif args.acc_mode == "vr":
                 loss_fn = van_rossum_distance
             elif args.acc_mode == "huber_vr":
@@ -683,14 +799,22 @@ if __name__ == "__main__":
             train_loader = DataLoader(
                 train_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=False
             )
+            test_dataset = IntracorticalDataset(
+                complete_test_data_for_train,
+                complete_test_labels_for_train,
+            )
+            test_loader = DataLoader(
+                test_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False
+            )
 
             train_ae(
                 ae,
                 train_loader,
-                train_loader,
+                test_loader,
                 optimiser,
                 loss_fn,
                 args,
+                projection_head=projection_head,
                 scheduler=scheduler,
             )
 
@@ -804,60 +928,57 @@ if __name__ == "__main__":
                 for i in range(len(spike_times)):
                     if i in detected_spikes:
                         idx = np.where(detected_spikes == i)[0][0]
-                        # all_spike_signals[spike_class_label[i]].append(
-                        #     filtered_signal[
-                        #         detected_spike_times[idx]
-                        #         - detection_window_size : detected_spike_times[idx]
-                        #         + sorting_window_size
-                        #         - detection_window_size
-                        #     ]
-                        # )
-                        # all_spk_trains[spike_class_label[i]].append(
-                        #     spike_train[
-                        #         detected_spike_times[idx]
-                        #         - detection_window_size : detected_spike_times[idx]
-                        #         + sorting_window_size
-                        #         - detection_window_size
-                        #     ]
-                        # )
-                        # First get the detection index 
-                        idx_of_spike_detector = detected_spike_times[idx]
-                        idx_of_spike_label = spike_times[i]
-                
-                        # Then extract the window to align
-                        # We want the detected index point to sit right in the middle of the window
-                        for_alignment_window = spike_train_dm[idx_of_spike_detector - alignment_window_half_dim : idx_of_spike_detector + alignment_window_half_dim + 1]
-                
-                        # Find the alignment point
-                        alignment_point = find_alignment_point(for_alignment_window)
-                
-                        # Get the relative index of idx_of_spike_detector with respect to for_alignment_window
-                        relative_idx = alignment_point - alignment_window_half_dim
-                
-                        # Get the new aligned index of the spike detector
-                        new_idx_of_spike_detector = idx_of_spike_detector + relative_idx
-                
-                        filtered_signal_aligned = filtered_signal[
-                            new_idx_of_spike_detector - 36 : new_idx_of_spike_detector + 36
-                        ]
-                        spk_train_dm_aligned = spike_train_dm[new_idx_of_spike_detector - 36 : new_idx_of_spike_detector + 36]
-                
+
                         all_spike_signals[spike_class_label[i]].append(
                             filtered_signal[
-                                new_idx_of_spike_detector
-                                - detection_window_size : new_idx_of_spike_detector
+                                detected_spike_times[idx]
+                                - detection_window_size : detected_spike_times[idx]
                                 + sorting_window_size
                                 - detection_window_size
                             ]
                         )
                         all_spk_trains[spike_class_label[i]].append(
                             spike_train[
-                                new_idx_of_spike_detector
-                                - detection_window_size : new_idx_of_spike_detector
+                                detected_spike_times[idx]
+                                - detection_window_size : detected_spike_times[idx]
                                 + sorting_window_size
                                 - detection_window_size
                             ]
                         )
+
+                        # # First get the detection index 
+                        # idx_of_spike_detector = detected_spike_times[idx]
+                        # idx_of_spike_label = spike_times[i]
+                
+                        # # Then extract the window to align
+                        # # We want the detected index point to sit right in the middle of the window
+                        # for_alignment_window = spike_train_dm[idx_of_spike_detector - alignment_window_half_dim : idx_of_spike_detector + alignment_window_half_dim + 1]
+                
+                        # # Find the alignment point
+                        # alignment_point = find_alignment_point(for_alignment_window, version=3)
+                
+                        # # # Get the relative index of idx_of_spike_detector with respect to for_alignment_window
+                        # # relative_idx = alignment_point - alignment_window_half_dim
+                        # # # Get the new aligned index of the spike detector
+                        # # new_idx_of_spike_detector = idx_of_spike_detector + relative_idx
+                        # new_idx_of_spike_detector = idx_of_spike_detector - alignment_point
+                
+                        # all_spike_signals[spike_class_label[i]].append(
+                        #     filtered_signal[
+                        #         new_idx_of_spike_detector
+                        #         - detection_window_size : new_idx_of_spike_detector
+                        #         + sorting_window_size
+                        #         - detection_window_size
+                        #     ]
+                        # )
+                        # all_spk_trains[spike_class_label[i]].append(
+                        #     spike_train[
+                        #         new_idx_of_spike_detector
+                        #         - detection_window_size : new_idx_of_spike_detector
+                        #         + sorting_window_size
+                        #         - detection_window_size
+                        #     ]
+                        # )
         
                 (
                     train_spk_train,
@@ -918,7 +1039,8 @@ if __name__ == "__main__":
                 elif args.acc_mode == "mae":
                     loss_fn = nn.L1Loss()
                 elif args.acc_mode == "huber":
-                    loss_fn = weighted_huber_loss
+                    # loss_fn = weighted_huber_loss
+                    loss_fn = nn.HuberLoss()
                 elif args.acc_mode == "vr":
                     loss_fn = van_rossum_distance
                 elif args.acc_mode == "huber_vr":
@@ -1027,7 +1149,7 @@ if __name__ == "__main__":
                 net = DEC(
                     num_clusters=len(spike_classes),
                     hidden_dim=args.latent_dim,
-                    alpha=0.5, # compare to see if its better to use 1.0 or 2.0
+                    alpha=1.0, # compare to see if its better to use 1.0 or 2.0
                     initial_centroids=initial_centroids,
                 )
                 

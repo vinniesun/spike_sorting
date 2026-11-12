@@ -77,7 +77,7 @@ if __name__ == "__main__":
 
     dm_threshold = 0.2
 
-    alignment_window_half_dim = 12 # 0.5ms seems too large. Try 0.33ms/8 idx. seems too small. trying 10
+    alignment_window_half_dim = 6 # 0.5ms seems too large. Try 0.33ms/8 idx. seems too small. trying 10
 
     DETECTION_IDX = "Intracortical_Spike_Detection_IDX.txt"
     VISUALISATION_DIR = "./post_alignment_plots/"
@@ -105,7 +105,7 @@ if __name__ == "__main__":
     
         line_no += 1
 
-    for difficulty in ["Difficult1", "Difficult2"]:
+    for difficulty in ["Difficult1", "Difficult2", "Easy1"]:
         for noise_level in ["005", "01", "015", "02"]:
             filename = f"C_{difficulty}_noise{noise_level}.mat"
 
@@ -147,16 +147,19 @@ if __name__ == "__main__":
 
                     # Then extract the window to align
                     # We want the detected index point to sit right in the middle of the window
-                    for_alignment_window = spike_train_dm[idx_of_spike_detector - alignment_window_half_dim : idx_of_spike_detector + alignment_window_half_dim + 1]
+                    # for_alignment_window = spike_train_dm[idx_of_spike_detector - alignment_window_half_dim : idx_of_spike_detector + alignment_window_half_dim + 1]
+                    for_alignment_window = spike_train_dm[idx_of_spike_detector - alignment_window_half_dim:idx_of_spike_detector + 1]
 
                     # Find the alignment point
-                    alignment_point = find_alignment_point(for_alignment_window)
+                    alignment_point = find_alignment_point(for_alignment_window, version=3)
 
                     # Get the relative index of idx_of_spike_detector with respect to for_alignment_window
-                    relative_idx = alignment_point - alignment_window_half_dim
+                    # relative_idx = alignment_point - alignment_window_half_dim
+                    relative_idx = -alignment_point
 
                     # Get the new aligned index of the spike detector
-                    new_idx_of_spike_detector = idx_of_spike_detector + relative_idx
+                    # new_idx_of_spike_detector = idx_of_spike_detector + relative_idx
+                    new_idx_of_spike_detector = idx_of_spike_detector - alignment_point
 
                     # draw the aligned window
                     filtered_signal_aligned = filtered_signal[new_idx_of_spike_detector - 36 : new_idx_of_spike_detector + 36]

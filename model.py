@@ -1030,6 +1030,7 @@ class Conv1DLSTMAE(nn.Module):
         kernel_size: int,
         kernel_stride: int,
         padding: int=0,
+        version: int=2
     ):
         super().__init__()
 
@@ -1041,6 +1042,7 @@ class Conv1DLSTMAE(nn.Module):
         self.kernel_size = kernel_size
         self.kernel_stride = kernel_stride
         self.padding = padding
+        self.version = version
 
         # encoder
         self.conv1 = nn.Conv1d(
@@ -1059,29 +1061,43 @@ class Conv1DLSTMAE(nn.Module):
         )
         self.to_latent = nn.Linear(hidden_dim, latent_dim)
         self.bn = nn.BatchNorm1d(latent_dim, affine=False)
+        self.ln = nn.LayerNorm(latent_dim, elementwise_affine=True)
+        self.gn = nn.GroupNorm(num_groups=2, num_channels=out_channels, affine=False)
+        self.bn_conv = nn.BatchNorm1d(out_channels, affine=False)
 
         # decoder
         self.from_latent = nn.Linear(latent_dim, hidden_dim)
         self.decoder_ht = nn.Linear(hidden_dim, hidden_dim)
         self.decoder_ct = nn.Linear(hidden_dim, hidden_dim)
-        self.lstm_decoder = nn.LSTMCell(
-            input_size=input_dim + latent_dim,
-            hidden_size=hidden_dim,
-        )
+        if version == 1:
+            self.lstm_decoder = nn.LSTMCell(
+                input_size=input_dim + latent_dim,
+                hidden_size=hidden_dim,
+            )
+        elif version == 2:
+            self.lstm_decoder = nn.LSTMCell(
+                input_size=input_dim,
+                hidden_size=hidden_dim,
+            )
+        else:
+            raise ValueError(f"Invalid version: {version}. Must be 1 or 2.")
         self.to_output = nn.Linear(hidden_dim, input_dim)
+        self.dropout = nn.Dropout(0.2)
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.relu(self.conv1(x))
+        x = self.relu(self.gn(self.conv1(x)))
+        # x = self.relu(self.bn_conv(self.conv1(x)))
 
         x = x.permute(0, 2, 1) # (B, C, T) -> (B, T, C)
         _, (h, c) = self.lstm_encoder(x) # h/c shape: (1, b, hidden_dim)
         h = h.squeeze(0) # shape: (b, hidden_dim)
 
-        out = self.bn(self.to_latent(h)) # batchnorm only
+        # out = self.bn(self.to_latent(h)) # batchnorm only
 
-        # out = F.normalize(out, p=2, dim=1) # L2 normalize only
+        # out = F.normalize(self.to_latent(h), p=2, dim=1) # L2 normalize only
         
-        # out = F.normalize(self.bn(self.to_latent(h)), p=2, dim=1) # batchnorm + L2 normalize
+        out = F.normalize(self.bn(self.to_latent(h)), p=2, dim=1) # batchnorm + L2 normalize
+        # out = F.normalize(self.ln(self.to_latent(h)), p=2, dim=1) # layernorm + L2 normalize
 
         return out
 
@@ -1098,13 +1114,21 @@ class Conv1DLSTMAE(nn.Module):
         prev_y = torch.zeros(x.shape[0], self.input_dim, device=x.device)
 
         outputs = []
-        for i in range(self.seq_len):
-            decoder_input = torch.cat([prev_y, x], dim=1) # (batch_size, hidden_dim + latent_dim)
-            h_t, c_t = self.lstm_decoder(decoder_input, (h_t, c_t))
+        if self.version == 1:
+            for i in range(self.seq_len):
+                decoder_input = torch.cat([prev_y, x], dim=1) # (batch_size, hidden_dim + latent_dim)
+                h_t, c_t = self.lstm_decoder(decoder_input, (h_t, c_t))
 
-            out = self.to_output(h_t) # (batch_size, input_dim)
-            outputs.append(out)
-            prev_y = out
+                out = self.to_output(h_t) # (batch_size, input_dim)
+                outputs.append(out)
+                prev_y = out
+        elif self.version == 2:
+            for i in range(self.seq_len):
+                h_t, c_t = self.lstm_decoder(prev_y, (h_t, c_t))
+            
+                out = self.to_output(h_t) # (batch_size, input_dim)
+                outputs.append(out)
+                prev_y = out
 
         outputs = torch.stack(outputs, dim=1).permute(0, 2, 1) # (batch_size, input_dim, seq_len)
 
@@ -1157,7 +1181,10 @@ class ClusterAssignment(nn.Module):
         :param batch: FloatTensor of [batch size, embedding dimension]
         :return: FloatTensor [batch size, number of clusters]
         """
-        norm_squared = torch.sum( (x.unsqueeze(1) - self.centroids) ** 2, dim=2)
+        # norm_squared = torch.sum( (x.unsqueeze(1) - self.centroids) ** 2, dim=2) # Eucliden dist
+        norm_squared = 2*(1 - F.cosine_similarity(x.unsqueeze(1), self.centroids, dim=-1)) # cosine dist. try multiplying by two as d_e**2 == 2*d_c (for normalised input)
+        # cosine_sim = (1 - F.cosine_similarity(x.unsqueeze(1), self.centroids, dim=-1)).clamp(-1 + 1e-7, 1 - 1e-7) # cos_angular
+        # norm_squared = torch.acos(cosine_sim) # cos_angular
         numerator = 1.0 / (1.0 + (norm_squared / self.alpha))
         power = float(self.alpha + 1) / 2
         numerator = numerator ** power

@@ -428,36 +428,84 @@ def target_distribution(batch: torch.Tensor) -> torch.Tensor:
     weight = (batch ** 2) / torch.sum(batch, 0)
     return (weight.t() / torch.sum(weight, 1)).t()
 
-def find_alignment_point(a: np.ndarray) -> int | None:
-    nz = np.flatnonzero(a)
+def find_alignment_point(a: np.ndarray, version=2) -> int | None:
+    if version == 1:
+        nz = np.flatnonzero(a)
 
-    if nz.size == 0:
-        return None
+        if nz.size == 0:
+            return None
 
-    # check the gap between indices at the start. if the gap is too big, it's probably noise that need to be ignored.
-    truncate = False
-    if nz[1] - nz[0] > 5:  # gap threshold, can be adjusted based on the data characteristics
-        nz = nz[1:]
-        truncate = True
+        # check the gap between indices at the start. if the gap is too big, it's probably noise that need to be ignored.
+        truncate = False
+        if nz[1] - nz[0] > 4:  # gap threshold, can be adjusted based on the data characteristics
+            nz = nz[1:]
+            truncate = True
 
-    first_idx = nz[0]
-    polarity = np.sign(a[first_idx])
-    # Find first occurrence of opposite polarity after first polarity starts
-    if truncate:
-        test = np.zeros_like(a)
-        test[first_idx:] = a[first_idx:]
-        opposite = np.flatnonzero(np.sign(test) == -polarity)
+        first_idx = nz[0]
+        polarity = np.sign(a[first_idx])
+        # Find first occurrence of opposite polarity after first polarity starts
+        if truncate:
+            test = np.zeros_like(a)
+            test[first_idx:] = a[first_idx:]
+            opposite = np.flatnonzero(np.sign(test) == -polarity)
+        else:
+            opposite = np.flatnonzero(np.sign(a) == -polarity)
+        
+        if opposite.size == 0:
+            return first_idx
+        else:
+            opposite = opposite[0]
+        
+        if truncate:
+            same = np.flatnonzero(np.sign(test[:opposite]) == polarity)[-1]
+        else:
+            same = np.flatnonzero(np.sign(a[:opposite]) == polarity)[-1]
+
+        return same
+    elif version == 2:
+        window_size = 5
+        a_window = np.lib.stride_tricks.sliding_window_view(a, window_size)
+        a_sum = np.sum(a_window, axis=1)
+        index_max = np.flatnonzero(np.abs(a_sum) == np.max(np.abs(a_sum)))
+
+        signs = np.sign(a_sum[index_max])
+
+        if len(signs) > 1:
+            # check if they're all the same signs
+            if np.all(signs == signs[0]):
+                chosen_idx = index_max[-1]
+            else:
+                # find the last index of the first sign
+                first_sign = signs[0]
+                chosen_idx = index_max[np.where(signs == first_sign)[0][-1]]
+        else:
+            chosen_idx = index_max[0]
+
+        return chosen_idx + a.shape[0] - a_sum.shape[0]
+
+    elif version == 3:
+        # sign of the last element
+        last_sign = np.sign(a[-1])
+
+        i = len(a) - 2
+        sign_change_idx = None
+        zero_counter = 0
+        while i >= 0:
+            if np.sign(a[i]) != last_sign:
+                if last_sign != 0 and np.sign(a[i]) == 0:
+                    zero_counter += 1
+                    if zero_counter >= 2:
+                        break
+                    i -= 1
+                    continue
+                else:
+                    sign_change_idx = i
+                    break
+            i -= 1
+
+        if sign_change_idx is None:
+            return 0
+        else:
+            return len(a) - i - 1
     else:
-        opposite = np.flatnonzero(np.sign(a) == -polarity)
-    
-    if opposite.size == 0:
-        return first_idx
-    else:
-        opposite = opposite[0]
-    
-    if truncate:
-        same = np.flatnonzero(np.sign(test[:opposite]) == polarity)[-1]
-    else:
-        same = np.flatnonzero(np.sign(a[:opposite]) == polarity)[-1]
-
-    return same
+        raise ValueError(f"Invalid version: {version}. Must be 1 or 2.")
