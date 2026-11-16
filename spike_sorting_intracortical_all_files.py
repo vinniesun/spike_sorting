@@ -208,7 +208,7 @@ if __name__ == "__main__":
     encoder_threshold = 0.2
     lif_tau = 1 * (1/24000)
     detection_window_size = 8
-    sorting_window_size = 32 # 2ms
+    sorting_window_size = 48 # 2ms
 
     MODEL_FILENAME_ACC = f"./intracortical_weights/spike_sorting_best_model_acc.pth"
     MODEL_FILENAME_LOSS = f"./intracortical_weights/spike_sorting_best_model_loss.pth"
@@ -226,7 +226,7 @@ if __name__ == "__main__":
     while line_no < len(detection_idx_lines):
         line = detection_idx_lines[line_no]
         if "Filename: " in line:
-            filename = line.split("Filename: ")[1][:-2]
+            filename = line.split("Filename: ")[1][:-1]
             detection_idx_results_when_detected[filename] = []
             detection_idx_results_label_spike_time[filename] = []
         else:
@@ -316,7 +316,7 @@ if __name__ == "__main__":
     if args.model_type == "non_raf":
         net = SpikingLSTMSpikeSorter(
             input_dim=1,
-            hidden_size=256,
+            hidden_size=64,
             num_classes=len(spike_classes),
             acc_mode=args.acc_mode
         )

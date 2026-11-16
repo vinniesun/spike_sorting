@@ -257,7 +257,8 @@ class SpikingLSTMSpikeSorter(nn.Module):
         input_dim: int,
         hidden_size: int,
         num_classes: int,
-        acc_mode: str = "count"
+        acc_mode: str = "count",
+        version:int = 2
     ):
         super().__init__()
 
@@ -265,6 +266,7 @@ class SpikingLSTMSpikeSorter(nn.Module):
         self.hidden_size = hidden_size
         self.num_classes = num_classes
         self.acc_mode = acc_mode
+        self.version = version
 
         # self.slstm = snn.SLSTM(
         #     input_size=input_dim + hidden_size, # recurrence dim: input_dim + hidden_size. non-recurrent dim: input_dim
@@ -276,11 +278,26 @@ class SpikingLSTMSpikeSorter(nn.Module):
         #     reset_mechanism="subtract"
         # )
 
-        self.lstm = nn.LSTMCell(
-            input_size=input_dim, # recurrence dim: input_dim + hidden_size. non-recurrent dim: input_dim
-            hidden_size=hidden_size,
-            bias=True
-        )
+        if version == 1:
+            self.lstm = nn.LSTMCell(
+                input_size=input_dim, # recurrence dim: input_dim + hidden_size. non-recurrent dim: input_dim
+                hidden_size=hidden_size,
+                bias=True
+            )
+        elif version == 2:
+            self.conv = nn.Conv1d(
+                in_channels=input_dim,
+                out_channels=32,
+                kernel_size=4,
+                stride=2,
+                padding=0
+            )
+            self.lstm = nn.LSTMCell(
+                input_size=32, # recurrence dim: input_dim + hidden_size. non-recurrent dim: input_dim
+                hidden_size=hidden_size,
+                bias=True
+            )
+            self.gn = nn.GroupNorm(num_groups=4, num_channels=32)
         # self.lstm_reverse = nn.LSTMCell(
         #     input_size=input_dim, # recurrence dim: input_dim + hidden_size. non-recurrent dim: input_dim
         #     hidden_size=hidden_size,
@@ -334,18 +351,31 @@ class SpikingLSTMSpikeSorter(nn.Module):
 
         h_t = torch.zeros(batch_size, self.hidden_size, device=x.device)    # for nn.LSTMCell
         c_t = torch.zeros_like(h_t)                                         # for nn.LSTMCell
-
+        
         mem2 = self.lif1.reset_mem()
         
         spk2_hist = []
-        for i in range(seq_len):
-            current_input = x[:, i].unsqueeze(-1) # only use the input, not the previous hidden state
+        if self.version == 1:
+            for i in range(seq_len):
+                current_input = x[:, i].unsqueeze(-1) # only use the input, not the previous hidden state
 
-            h_t, c_t = self.lstm(current_input, (h_t, c_t)) # for nn.LSTMCell
-            curr = self.fc1(self.relu(h_t))
-            spk2, mem2 = self.lif1(curr, mem2)
+                h_t, c_t = self.lstm(current_input, (h_t, c_t)) # for nn.LSTMCell
+                curr = self.fc1(self.relu(h_t))
+                spk2, mem2 = self.lif1(curr, mem2)
 
-            spk2_hist.append(spk2)
+                spk2_hist.append(spk2)
+        elif self.version == 2:
+            # x_conv = self.relu(self.gn(self.conv(x.unsqueeze(1)))) # Shape: (batch_size, 32, seq_len//2)
+            x_conv = self.relu(self.conv(x.unsqueeze(1))) # Shape: (batch_size, 32, seq_len//2)
+            x_conv = x_conv.permute(0, 2, 1) # Shape: (batch_size, seq_len//2, 32)
+            for i in range(x_conv.shape[1]):
+                current_input = x_conv[:, i, :]
+
+                h_t, c_t = self.lstm(current_input, (h_t, c_t)) # for nn.LSTMCell
+                curr = self.fc1(h_t)
+                spk2, mem2 = self.lif1(curr, mem2)
+
+                spk2_hist.append(spk2)
 
         if self.acc_mode == "max_membrane":
             return mem2
@@ -1030,7 +1060,7 @@ class Conv1DLSTMAE(nn.Module):
         kernel_size: int,
         kernel_stride: int,
         padding: int=0,
-        version: int=2
+        version: int=3
     ):
         super().__init__()
 

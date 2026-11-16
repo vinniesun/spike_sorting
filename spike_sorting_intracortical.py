@@ -1,23 +1,32 @@
-import numpy as np
+import argparse
+import copy
+import os
+import random
+from datetime import datetime
+
 import matplotlib.pyplot as plt
+import numpy as np
+import snntorch.functional as SF
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-import snntorch.functional as SF
-import random
-import os
-from datetime import datetime
 from tqdm import tqdm
-import copy
 
+from model import (
+    DCLSWindowLSTMSpikeSorter,
+    DCLSWindowLSTMSpikeSorterV2,
+    RAFSpikingLSTMSpikeSorter,
+    SpikingLSTMSpikeSorter,
+    WindowLSTMSpikeSorter,
+)
 from utils import (
     IntracorticalDataset,
-    load_dataset_intracortical,
     dv_to_lif_spike_gen,
-    train_test_split_spike_sorting,
     generate_event_stream_dm,
+    load_dataset_intracortical,
+    train_test_split_spike_sorting,
 )
-from model import SpikingLSTMSpikeSorter
+
 
 def train(
     net,
@@ -161,6 +170,14 @@ if __name__ == "__main__":
     """
         Dataset downloaded from: https://figshare.le.ac.uk/articles/dataset/Simulated_dataset/11897595?file=21819066
     """
+    parser = argparse.ArgumentParser(description="Spike Detection on Neuropixel")
+    parser.add_argument("--seed", type=int, default=1234, help="Random seed") # 1337, 5673, 1234
+    parser.add_argument("--model_type", type=str, default="non_raf", choices=["raf", "non_raf", "window", "delay"], help="Model used for spike sorting")
+    parser.add_argument("--acc_mode", type=str, default="count", choices=["count", "temporal", "max_membrane"], help="Accuracy mode for training and testing")
+    parser.add_argument('--test_only', type=bool, default=False, help='If True, only test the model without training')
+    
+    args = parser.parse_args()
+
     BATCH_SIZE = 256 # 128 or 64
     NUM_EPOCHS= 60 # 60 epochs seems to work for lstm + lif model. slstm + lif seems to need more epochs.
 
@@ -169,7 +186,7 @@ if __name__ == "__main__":
         os.makedirs(TRAINING_LOG_PATH)
     TRAINING_LOG_NAME = f"{TRAINING_LOG_PATH}/training_log_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.txt"
 
-    SEED = 1234 # 1337, 5673, 1234
+    SEED = args.seed # 1337, 5673, 1234
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
     random.seed(SEED)
     np.random.seed(SEED)
@@ -206,7 +223,7 @@ if __name__ == "__main__":
     while line_no < len(detection_idx_lines):
         line = detection_idx_lines[line_no]
         if "Filename: " in line:
-            filename = line.split("Filename: ")[1][:-2]
+            filename = line.split("Filename: ")[1][:-1]
             detection_idx_results_when_detected[filename] = []
             detection_idx_results_label_spike_time[filename] = []
         else:
@@ -297,17 +314,81 @@ if __name__ == "__main__":
             train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=False)
             test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=False)
 
-            net = SpikingLSTMSpikeSorter(
-                input_dim=1,
-                hidden_size=128, # was 128
-                num_classes=len(spike_classes),
-            )
-            net.to(DEVICE)
-            test_net = copy.deepcopy(net)
+            if args.model_type == "non_raf":
+                net = SpikingLSTMSpikeSorter(
+                    input_dim=1,
+                    hidden_size=32,
+                    num_classes=len(spike_classes),
+                    acc_mode=args.acc_mode
+                )
+                net.to(DEVICE)
+                test_net = copy.deepcopy(net)
+            
+                optimiser = torch.optim.AdamW(net.parameters(), lr=2e-3, betas=(0.9, 0.999), weight_decay=0.1)
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=NUM_EPOCHS, eta_min=1e-6)
+            elif args.model_type == "window":
+                net = WindowLSTMSpikeSorter(
+                    input_dim=5,
+                    hidden_size=128,
+                    num_classes=len(spike_classes),
+                    acc_mode=args.acc_mode
+                )
+                net.to(DEVICE)
+                test_net = copy.deepcopy(net)
+            
+                optimiser = torch.optim.AdamW(net.parameters(), lr=2e-3, betas=(0.9, 0.999), weight_decay=0.1)
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=NUM_EPOCHS, eta_min=1e-6)
+            elif args.model_type == "delay":
+                # net = DCLSWindowLSTMSpikeSorter(
+                #     input_dim=3,
+                #     hidden_size=128,
+                #     kernel_count=1,
+                #     dilated_kernel_size=1,
+                #     num_classes=len(spike_classes),
+                #     acc_mode=args.acc_mode
+                # )
+                net = DCLSWindowLSTMSpikeSorterV2(
+                    input_dim=3,
+                    hidden_size=256,
+                    kernel_count=10,
+                    dilated_kernel_size=5,
+                    num_classes=len(spike_classes),
+                    acc_mode=args.acc_mode
+                )
+                net.to(DEVICE)
+                test_net = copy.deepcopy(net)
+            
+                optimiser = torch.optim.AdamW(net.parameters(), lr=2e-3, betas=(0.9, 0.999), weight_decay=0.1)
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=NUM_EPOCHS, eta_min=1e-6)
+            elif args.model_type == "raf":
+                net = RAFSpikingLSTMSpikeSorter(
+                    input_dim=1,
+                    hidden_size=128,
+                    num_classes=len(spike_classes),
+                )
+                net.to(DEVICE)
+                test_net = copy.deepcopy(net)
+            
+                optimiser = torch.optim.AdamW(
+                    [
+                        {'params': net.rafs.dual_omegas, 'lr': 0.00001},
+                        {'params': net.rafs.dual_bs, 'lr': 0.00001},
+                        {'params': net.rafs.dual_threshold, 'lr': 1e-8},
+                        {'params': net.dtlif.beta, 'lr': 1e-4},
+                        {'params': net.dtlif.pos_threshold, 'lr': 1e-4},
+                        {'params': net.dtlif.neg_threshold, 'lr': 1e-4},
+                        {'params': net.fc1.parameters()},
+                        {'params': net.lif1.parameters()},
+                    ], lr=1e-3, betas=(0.9, 0.999), weight_decay=0.01,
+                ) # This setting seems to work the best for Model2()
+                scheduler = None
+            else:
+                raise ValueError("Invalid model type. Choose either 'raf', 'window', or 'non_raf'.")
 
-            optimiser = torch.optim.AdamW(net.parameters(), lr=2e-3, betas=(0.9, 0.999), weight_decay=0.1)
-            loss_fn = SF.ce_count_loss()
-            scheduler = None
+            if args.acc_mode == "count" or args.acc_mode == "temporal":
+                loss_fn = SF.ce_count_loss()
+            elif args.acc_mode == "max_membrane":
+                loss_fn = nn.CrossEntropyLoss()
 
             train(net, train_loader, optimiser, loss_fn, acc_mode="count", scheduler=scheduler) # acc_mode="temporal" or "count"
             test(test_net, test_loader, acc_mode="count", model_type="acc", final_test=True, visualise=True)

@@ -205,11 +205,11 @@ if __name__ == "__main__":
     encoder_threshold = 0.2
     lif_tau = 1 * (1/24000)
     detection_window_size = 8
-    sorting_window_size = 32 # 2ms
+    sorting_window_size = 48 # 2ms
     
     DETECTION_IDX = f"Intracortical_Spike_Detection_IDX.txt"
 
-    PRETRAIN_MODEL_FILENAME = f"./intracortical_weights/spike_sorting_best_model_acc.pth"
+    # PRETRAIN_MODEL_FILENAME = f"./intracortical_weights/spike_sorting_best_model_acc.pth"
 
     detection_idx_results_when_detected = {}
     detection_idx_results_label_spike_time = {}
@@ -220,7 +220,7 @@ if __name__ == "__main__":
     while line_no < len(detection_idx_lines):
         line = detection_idx_lines[line_no]
         if "Filename: " in line:
-            filename = line.split("Filename: ")[1][:-2]
+            filename = line.split("Filename: ")[1][:-1]
             detection_idx_results_when_detected[filename] = []
             detection_idx_results_label_spike_time[filename] = []
         else:
@@ -295,6 +295,7 @@ if __name__ == "__main__":
             complete_test_labels[filename[:-4]] = test_labels_tensor
 
     for difficulty in ["Difficult1", "Difficult2", "Easy1", "Easy2"]:
+        PRETRAIN_MODEL_FILENAME = f"./intracortical_weights/{difficulty}_spike_sorting_best_model_acc.pth"
         for noise_level in ["005", "01", "015", "02"]:
             filename = f"C_{difficulty}_noise{noise_level}.mat"
 
@@ -313,7 +314,7 @@ if __name__ == "__main__":
             if args.model_type == "non_raf":
                 net = SpikingLSTMSpikeSorter(
                     input_dim=1,
-                    hidden_size=128,
+                    hidden_size=64,
                     num_classes=len(spike_classes),
                     acc_mode=args.acc_mode
                 )
@@ -347,7 +348,7 @@ if __name__ == "__main__":
             net.to(DEVICE)
             test_net = copy.deepcopy(net)
             
-            optimiser = torch.optim.AdamW(net.parameters(), lr=5e-4, betas=(0.9, 0.999), weight_decay=0.1)
+            optimiser = torch.optim.AdamW(net.parameters(), lr=1e-4, betas=(0.9, 0.999), weight_decay=0.01)
             if args.acc_mode == "count" or args.acc_mode == "temporal":
                 loss_fn = SF.ce_count_loss()
             elif args.acc_mode == "max_membrane":

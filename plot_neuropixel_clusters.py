@@ -1,14 +1,16 @@
-import numpy as np
+import csv
+
 import matplotlib.pyplot as plt
+import numpy as np
 from scipy.signal import (
-    # ellip, 
-    lfilter, 
-    butter, 
+    butter,
     # find_peaks, 
     # welch
+    # ellip, 
+    lfilter,
 )
 from tqdm import tqdm
-import csv
+
 
 def load_neuropixel(
     filename: str,
@@ -45,6 +47,8 @@ def load_neuropixel(
 
 if __name__ == "__main__":
     ############ 
+    # Use this file to plot and save segment of neuropixel channels!!!
+    # 
     # Dataset Downloaded from: https://rdr.ucl.ac.uk/articles/dataset/Chronic_recordings_from_Neuropixels_2_0_probes_in_mice/24411841
     #
     # To use the dataset, we need to install the following package through pip:
@@ -61,13 +65,13 @@ if __name__ == "__main__":
     complete_filename = filepath + filename
     ks_filepath = "./Neuropixel/AL036_2020-03-11/AL036_2020-03-11/ks"
 
-    SAVE_NEUROPIXEL = False
+    SAVE_NEUROPIXEL = True
 
     sampling_rate = 30000
     sampling_interval = 1 / sampling_rate
     num_rows = 385
     num_channels = 384
-    window_size = 240 # 240 seconds worth of data
+    window_size = 200 # 240 seconds worth of data
 
     total_samples = int(window_size * sampling_rate)
 
