@@ -42,6 +42,33 @@ def plot_example_dv_trains(raw_data, dv_all_channels, gt_spike_times, spike_clus
             plt.savefig(f"Neuropixel_example_dv_train/channel_{ac}_cluster_{cluster_id}.png")
             plt.close()
 
+def neo_labeling(raw_signal, neo_multiplier=80, gt_window=3, num_channels=384):
+    neo = np.power(raw_signal, 2) - \
+          np.multiply(
+              np.hstack((np.zeros((num_channels, 1)), raw_signal))[:, :-1],
+              np.hstack((raw_signal, np.zeros((num_channels, 1))))[:, :-1]
+          )
+    neo = np.power(neo, 2) - \
+          np.multiply(
+              np.hstack((np.zeros((num_channels, 1)), neo))[:, :-1],
+              np.hstack((neo, np.zeros((num_channels, 1))))[:, :-1]
+          )
+    thd = np.mean(neo, axis=1).reshape(-1, 1) * neo_multiplier # shape: (384, 1)
+    
+    # Original
+    label = np.where(neo > thd, 1, 0) # (384, 300000)
+    
+    # New
+    # spd_label = np.zeros_like(raw_signal)
+    # for i in range(num_channels):
+    #     spk_idx = np.where(neo[i, :] > thd[i, :])[0]
+    #     spk_idx += 24
+    #     spk_idx = spk_idx.astype(int)
+    #     for idx in spk_idx:
+    #         spd_label[i, idx-gt_window:idx+gt_window+1] = 1
+
+    return label
+
 if __name__ == "__main__":
     """
         Dataset downloaded from: https://figshare.le.ac.uk/articles/dataset/Simulated_dataset/11897595?file=21819066
@@ -106,6 +133,7 @@ if __name__ == "__main__":
     # trim gt_spike_times and spike_clusters to window_size
     gt_spike_times = gt_spike_times[gt_spike_times < total_samples]
     # need another version for ground truth based on NEO
+    # gt_spike_times = neo_labeling(raw_data, neo_multiplier=80) # neo_multiplier: 40, 60, 70, 80
     spike_clusters = spike_clusters[:len(gt_spike_times)]
     print(gt_spike_times.shape)
 

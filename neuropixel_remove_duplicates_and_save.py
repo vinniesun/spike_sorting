@@ -48,30 +48,6 @@ def generate_spike_train(filtered_signal, threshold_multiplier, num_channels=384
     for i, event_stream in enumerate(complete_event_stream):
         spike_train[i, event_stream[:, 0].astype(int)] = event_stream[:, 3] - event_stream[:, 4]
 
-    # neo = np.power(filtered_signal, 2) - \
-    #       np.multiply(
-    #           np.hstack((np.zeros((num_channels, 1)), filtered_signal))[:, :-1],
-    #           np.hstack((filtered_signal, np.zeros((num_channels, 1))))[:, :-1]
-    #       )
-    # neo = np.power(neo, 2) - \
-    #       np.multiply(
-    #           np.hstack((np.zeros((num_channels, 1)), neo))[:, :-1],
-    #           np.hstack((neo, np.zeros((num_channels, 1))))[:, :-1]
-    #       )
-    # thd = np.mean(neo, axis=1).reshape(-1, 1) * neo_multiplier # shape: (384, 1)
-
-    # # Original
-    # # spd_label = np.where(neo > thd, 1, 0) # (384, 300000)
-
-    # # New
-    # spd_label = np.zeros_like(filtered_signal)
-    # for i in range(num_channels):
-    #     spk_idx = np.where(neo[i, :] > thd[i, :])[0]
-    #     spk_idx += 24
-    #     spk_idx = spk_idx.astype(int)
-    #     for idx in spk_idx:
-    #         spd_label[i, idx-gt_window:idx+gt_window+1] = 1
-
     return spike_train
 
 def get_threshold_reset_counts(input_signal, last_reset_voltage, off_threshold, on_threshold, pulse, num_threshold_reset):
