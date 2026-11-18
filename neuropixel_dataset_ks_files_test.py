@@ -1,3 +1,5 @@
+import csv
+
 import numpy as np
 
 if __name__ == "__main__":
@@ -17,34 +19,53 @@ if __name__ == "__main__":
     ############
     filename = "AL036_2020-03-11_stripe240_NatIm_g0_t0.imec0.ap.bin"
     filepath = "./Neuropixel/AL036_2020-03-11/AL036_2020-03-11/ks"
+    raw_filepath = "./Neuropixel/AL036_2020-03-11/AL036_2020-03-11/"
 
-    spike_times = np.load(f"{filepath}/spike_times.npy")
-    spike_clusters = np.load(f"{filepath}/spike_clusters.npy")
-    channel_map = np.load(f"{filepath}/channel_map.npy")
-    channel_positions = np.load(f"{filepath}/channel_positions.npy")
-    spike_templates = np.load(f"{filepath}/spike_templates.npy")
-    pc_features = np.load(f"{filepath}/pc_features.npy")    # principle component features
-    pc_features_ind = np.load(f"{filepath}/pc_feature_ind.npy")
-    print(spike_times.shape) # shape (3092428)
-    print(spike_times[0])
-    print(spike_clusters.shape) # shape (3092428)
-    print(channel_map.shape)    # shape (384)
-    print(channel_positions.shape)  # shape (384, 2)
-    # print(channel_positions)
-    print(spike_templates.shape)    # shape (3092428)
-    # print(spike_templates[:10])
-    print(pc_features.shape)        # shape (3092428, 3, 32)
-    # print(pc_features[0])
-    print(pc_features_ind.shape)    # shape (364, 32) i.e. there are 364 clusters and each cluster has 32 channels responsible for it.
-    print(pc_features_ind[270])
+    spike_times = np.load(f"{filepath}/spike_times.npy")        # shape (3092428)
+    spike_clusters = np.load(f"{filepath}/spike_clusters.npy")  # this is the final cluster id, shape (3092428)
+    channel_map = np.load(f"{filepath}/channel_map.npy")        # shape (384)
+    channel_positions = np.load(f"{filepath}/channel_positions.npy") # shape (384, 2)
+    spike_templates = np.load(f"{filepath}/spike_templates.npy")# original assignment before manual curation. shape (3092428)
+    pc_features = np.load(f"{filepath}/pc_features.npy")    # principle component features, shape (3092428, 3, 32)
+    pc_features_ind = np.load(f"{filepath}/pc_feature_ind.npy") # shape (364, 32)
+    template_ind = np.load(f"{filepath}/templates_ind.npy") # shape (384, 386)
 
-    ########
-    # spike_times provide the index for when the spike occurs.
-    # spike_clusters provide the cluster id for each spike
-    # pc_features_ind provide the channels responsible for each cluster group.
-    #
-    # For cluster 270, the responsible channels are :
-    # [115 113 117 111 119 114 112 116 110 118 109 121 108 120 107 123 106 122
-    # 105 125 104 124 103 127 102 126 101 129 100 128  99 131]
-    # 
-    ########
+    threshold = 4 # Signal must exceed 4 × channel noise
+
+    raw_data = []
+    for i in range(384):
+        raw_data_channel = np.load(f"{raw_filepath}raw_data_filtered_channel_{i}.npy")
+        raw_data.append(raw_data_channel)
+    raw_data = np.array(raw_data)
+
+    sample = int(spike_times[0])
+
+    waveform = raw_data[:, sample-20:sample+20]
+
+    noise_segment = raw_data[:, :30*30000] # shape (384)
+    baseline = np.median(noise_segment, axis=1) # shape (384)
+    mad = np.median(np.abs(noise_segment - baseline[:, np.newaxis]), axis=1) # shape (384)
+    noise_sd = 1.4826 * mad # shape (384)
+
+    trough_amplitude = baseline - waveform.min(axis=1) # shape (384)
+    visible = (noise_sd > 0) & (trough_amplitude > threshold * noise_sd)
+    print(noise_sd.shape, mad.shape, noise_segment.shape, baseline.shape, trough_amplitude.shape, visible.shape)
+
+    # # Gather all of the good cluster id
+    # good_cluster_id = []
+    # with open(f"{filepath}/cluster_KSLabel.tsv", encoding='utf-8') as f:
+    #     reader = csv.reader(f, delimiter='\t')
+    #     for i, row in enumerate(reader):
+    #         if i == 0:
+    #             continue
+    #         if row[1] == "good":
+    #             good_cluster_id.append(int(row[0]))
+    # print(good_cluster_id[:5])
+
+    # # Now we want to find all of the channels responsible for the good clusters.
+    # good_cluster_channels = set()
+    # for cluster_id in good_cluster_id:
+    #     channels = pc_features_ind[cluster_id]
+    #     for channel in channels:
+    #         good_cluster_channels.add(channel)
+    # print(len(good_cluster_channels))

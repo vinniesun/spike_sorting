@@ -146,7 +146,7 @@ if __name__ == "__main__":
                 current_true_label_window_start, current_true_label_window_end = spike_times[k] - 12, spike_times[k] + 12
 
                 count = np.count_nonzero(spike_train[i-examine_window_size:i])
-                ap_detected =  (count > spike_detection_threshold)
+                ap_detected = (count > spike_detection_threshold)
 
                 within_window = current_true_label_window_start <= i <= current_true_label_window_end
 

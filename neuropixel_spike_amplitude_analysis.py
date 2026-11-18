@@ -25,7 +25,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Spike Detection on Neuropixel")
     parser.add_argument("--seed", type=int, default=1234, help="Random seed") # 1337, 5673, 1234
     parser.add_argument("--sampling_rate", type=int, default=30000, help="Sampling rate for Neuropixel Dataset")
-    parser.add_argument("--window_size", type=int, default=240, help="Window size for Neuropixel Dataset in seconds")
+    parser.add_argument("--window_size", type=int, default=200, help="Window size for Neuropixel Dataset in seconds")
     parser.add_argument("--label_window_size", type=int, default=3, help="Window size for labeling spikes")
     parser.add_argument("--lif_threshold", type=float, default=0.1, help="LIF threshold for spike detection")
     parser.add_argument("--lif_tau", type=int, default=1, help="LIF tau for spike detection")
@@ -70,5 +70,5 @@ if __name__ == "__main__":
         median_trough = np.median(data_down[trough])
         spik_amplitude = (median_peak - median_trough) / 2
 
-        with open(f"Neuropixel_Spike_Amplitudes.txt", "a") as f:
+        with open("Neuropixel_Spike_Amplitudes.txt", "a") as f:
             f.write(f"Channel {i}: Spike Amplitude = {spik_amplitude:.2f}\n")
